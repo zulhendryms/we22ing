@@ -244,6 +244,12 @@ template {
   display: none;
 }
 
+.img-responsive {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 [hidden] {
   display: none;
 }
