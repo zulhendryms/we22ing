@@ -287,7 +287,12 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
 
 .remaining-time .time-sec .title{ font-size: 3em; line-height: 1; display: block; }
 
-
+@media screen and (max-width: 480px) {
+    .remaining-time .time-sec{ position: relative; display: inline-block; margin: 0 10px; margin-bottom: 30px; 
+        height: 75px; width: 75px; padding-top: 10px; border-radius: 100px; border: 1px solid #fff; }
+    
+    .remaining-time .time-sec .title{ font-size: 2em; line-height: 1; display: block; }
+}
 /* ---------------------------------
 6.5 zulhendry & vina
 --------------------------------- */
@@ -349,7 +354,7 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
 @media screen and (max-width: 480px) {
     .couple-half .groom,
     .couple-half .bride {
-        width: 100%;
+        width: 50%;
         height: 140px;
     }
     .couple-half .groom img,
