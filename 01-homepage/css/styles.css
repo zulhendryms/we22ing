@@ -407,13 +407,35 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
 }
 
 .couple-half .desc-groom {
-    padding-right: 180px;
+    /* padding-right: 180px; */
     text-align: right;
 }
 
 .couple-half .desc-bride {
-    padding-left: 180px;
+    /* padding-left: 180px; */
     text-align: left;
+}
+@media screen and (max-width: 1366px) {
+    .couple-half .groom {
+        /* float: right; */
+        margin-right: 5px;
+    }
+    .couple-half .bride {
+        /* float: left; */
+        margin-left: 5px;
+    }
+    .couple-half .desc-groom {
+        /* padding-right: 180px; */
+        width: 49%;
+        align-content: center;
+        text-align: right;
+    }
+    .couple-half .desc-bride {
+        /* padding-left: 180px; */
+        align-content: center;
+        width: 49%;
+        text-align: left;
+    }
 }
 
 @media screen and (max-width: 480px) {
