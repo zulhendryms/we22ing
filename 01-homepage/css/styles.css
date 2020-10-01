@@ -314,22 +314,22 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
 
 
 .couple-half {
-    width: 50%;
+    width: 100%;
     float: left;
 }
 
 @media screen and (max-width: 768px) {
     .couple-half {
         width: 100%;
-    }
+        padding: 0px;
+    }    
 }
 
-.couple-half h3 {
-    font-family: "Sacramento", Arial, serif;
-    color: #F14E95;
-    font-size: 30px;
-}
-
+.img-responsive {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
 .couple-half .groom,
 .couple-half .bride {
     float: left;
@@ -351,6 +351,37 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
     border-radius: 50%;
 }
 
+@media screen and (max-width: 768px) {
+    .couple-half .groom,
+    .couple-half .bride {
+        /* float: left; */
+        -webkit-border-radius: 100%;
+        -moz-border-radius: 100%;
+        -ms-border-radius: 100%;
+        border-radius: 100%;
+        width: 200px;
+        height: 200px;
+    }
+    
+    .couple-half .groom img,
+    .couple-half .bride img {
+        width: 200px;
+        height: 200px;
+        -webkit-border-radius: 100%;
+        -moz-border-radius: 100%;
+        -ms-border-radius: 100%;
+        border-radius: 100%;
+    }
+
+}
+
+.couple-half h3 {
+    font-family: "Sacramento", Arial, serif;
+    color: #F14E95;
+    font-size: 30px;
+}
+
+
 @media screen and (max-width: 480px) {
     .couple-half .groom,
     .couple-half .bride {
@@ -366,12 +397,12 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
 }
 
 .couple-half .groom {
-    float: right;
+    /* float: right; */
     margin-right: 5px;
 }
 
 .couple-half .bride {
-    float: left;
+    /* float: left; */
     margin-left: 5px;
 }
 
