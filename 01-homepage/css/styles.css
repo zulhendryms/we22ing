@@ -372,7 +372,6 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
         -ms-border-radius: 100%;
         border-radius: 100%;
     }
-
 }
 
 .couple-half h3 {
@@ -484,6 +483,45 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
 
 .w-detail .icon{ font-size: 3.5em; line-height: 1; color: #E45F74; }
 
+
+@-webkit-keyframes z-wedd  {
+    50% {
+      -webkit-transform: translateX(3px) rotate(2deg);
+      transform: translateX(3px) rotate(2deg);
+    }
+    100% {
+      -webkit-transform: translateX(-3px) rotate(-2deg);
+      transform: translateX(-3px) rotate(-2deg);
+    }
+  }
+  @keyframes z-wedd  {
+    50% {
+        -webkit-transform: translateX(3px) rotate(2deg);
+        transform: translateX(3px) rotate(2deg);
+      }
+      100% {
+        -webkit-transform: translateX(-3px) rotate(-2deg);
+        transform: translateX(-3px) rotate(-2deg);
+      }
+  }
+.z-wedd {
+    display: inline-block;
+    vertical-align: middle;
+    -webkit-transform: perspective(1px) translateZ(0);
+    transform: perspective(1px) translateZ(0);
+    box-shadow: 0 0 1px transparent;
+  }
+
+.z-wedd{
+    -webkit-animation-name: z-wedd;
+    animation-name: z-wedd;
+    -webkit-animation-duration: 0.15s;
+    animation-duration: 0.15s;
+    -webkit-animation-timing-function: linear;
+    animation-timing-function: linear;
+    -webkit-animation-iteration-count: infinite;
+    animation-iteration-count: infinite;
+  }
 
 
 /* ---------------------------------
