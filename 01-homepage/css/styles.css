@@ -523,6 +523,30 @@ header .main-menu li.drop-down a.mouseover + ul.drop-down-menu{ display: block;
     animation-iteration-count: infinite;
   }
 
+  /* instagram */
+
+  .btn.btn-social-icon {
+    width: 50px;
+    height: 50px;
+    padding: 0
+}
+
+.template-demo>.btn {
+    margin-right: 0.5rem !important
+}
+
+.template-demo {
+    margin-top: 0.5rem !important
+}
+
+.btn.btn-rounded {
+    border-radius: 50px
+}
+  .btn-instagram:hover,
+  .btn-instagram:focus {
+      background: #bf3322;
+      color: #ffffff
+  }
 
 /* ---------------------------------
 8. WEDDING CEREMONY
