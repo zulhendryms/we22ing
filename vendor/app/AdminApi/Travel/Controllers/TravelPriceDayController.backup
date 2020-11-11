@@ -1,0 +1,120 @@
+<?php
+
+namespace App\AdminApi\Travel\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Travel\Entities\TravelPriceDay; 
+use App\Core\Security\Services\RoleModuleService;
+use Carbon\Carbon;
+use App\AdminApi\Development\Controllers\CRUDDevelopmentController;
+
+class TravelPriceDayController extends Controller
+{
+    protected $roleService;
+    public function __construct(
+        RoleModuleService $roleService
+    ) {
+        $this->roleService = $roleService;
+        $this->crudController = new CRUDLogicController();
+    }
+
+    public function config(Request $request)
+    {
+        $data = $this->crudController->config('trvpriceday');
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    public function list(Request $request)
+    {
+        $data = DB::table('trvpriceday as data');
+        $data = $this->crudController->list('trvpriceday', $data, $request);
+        $role = $this->roleService->list('TravelPriceDay'); //rolepermission
+        foreach ($data->data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    public function index(Request $request)
+    {
+        try {            
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = TravelPriceDay::whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);
+            if ($request->has('datefrom')!=null && $request->has('dateto')!=null && $request->has('item')!=null) {
+                $data = $data
+                    ->where('DateFrom','>=', Carbon::parse($request->datefrom)->toDateString())
+                    ->where('DateTo','<=', Carbon::parse($request->dateto)->toDateString())
+                    ->where('Item',$request->item);
+            }else if($request->has('datefrom')!=null && $request->has('dateto')!=null) {
+                $data = $data
+                    ->where('DateFrom','>=', Carbon::parse($request->datefrom)->toDateString())
+                    ->where('DateTo','<=', Carbon::parse($request->dateto)->toDateString());
+            }else if($request->has('item')!=null) {
+                $data = $data
+                    ->where('Item',$request->item);
+            }
+            $data = $data->limit(200)->get();
+            foreach($data as $row){            
+                $row->DateFrom = Carbon::parse($row->DateFrom)->format('Y-m-d');  
+                $row->DateTo = Carbon::parse($row->DateTo)->format('Y-m-d');    
+            }
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    private function showSub($Oid)
+    {
+        $data = TravelPriceDay::whereNull('GCRecord');
+        $data = $this->crudController->detail('trvpriceday', $data, $Oid);
+        return $data;
+    }
+
+    public function show(TravelPriceDay $data)
+    {
+        return response()->json($this->showSub($data->Oid), Response::HTTP_OK);
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+
+        try {
+            if (!$Oid) $data = new TravelPriceDay();
+            else $data = TravelPriceDay::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $data = $this->crudController->save('trvpriceday', $data, $request);
+                $data->save();
+
+                if (!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('TravelPriceDay'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            $data->Action = $this->roleService->generateActionMaster($role);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(TravelPriceDay $data)
+    {
+        return $this->crudController->delete($this->module, $data);
+    }
+}

@@ -1,0 +1,807 @@
+<?php
+
+namespace App\AdminApi\Pub\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\AdminApi\Chart\Controllers\DashboardChartController;
+use App\Core\Pub\Entities\PublicApproval;
+use App\Core\Pub\Entities\PublicPost;
+use App\Core\Trading\Entities\PurchaseOrder;
+use App\Core\Accounting\Entities\CashBank;
+use App\Core\Internal\Events\EventSendNotificationSocketOneSignal;
+use App\Core\Internal\Entities\Status;
+use App\Core\Master\Entities\Department;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Base\Services\HttpService;
+use App\Core\Accounting\Services\CashBankService;
+use App\Core\Accounting\Services\JournalService;
+use App\Core\Internal\Services\AutoNumberService;
+use App\Core\Security\Entities\Notification;
+use App\AdminApi\Pub\Controllers\PublicDashboardServerController;
+
+use Carbon\Carbon;
+
+
+class PublicApprovalController extends Controller
+{
+    private $publicPostController;
+    protected $cashBankService;
+    private $autoNumberService;
+    private $dashboardServerController;
+
+    public function __construct()
+    {
+        $this->publicPostController = new PublicPostController(new RoleModuleService(new HttpService), new HttpService);
+        $this->cashBankService = new CashBankService(new JournalService);
+        $this->autoNumberService = new AutoNumberService();
+        $this->dashboardServerController = new PublicDashboardServerController();
+    }
+
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = ['w'=> 140, 'r'=>0, 't'=>'text', 'n'=>'Oid', 'fs'=> 'data.Oid'];
+        $fields[] = ['w'=> 180, 'r'=>0, 't'=>'text', 'n'=>'Company', 'fs'=> 'Company.Code'];
+        $fields[] = ['w'=> 140, 'r'=>0, 't'=>'text', 'n'=>'Type'];
+        $fields[] = ['w'=> 180, 'r'=>0, 't'=>'text', 'n'=>'Code', 'fs'=> 'PublicPost.Code'];
+        $fields[] = ['w'=> 180, 'r'=>0, 't'=>'text', 'n'=>'Date', 'fs'=> 'PublicPost.Date'];
+        // $fields[] = ['w'=> 180, 'r'=>0, 't'=>'text', 'n'=>'Department', 'fs'=> 'Department.Name'];
+        $fields[] = ['w'=> 180, 'r'=>0, 't'=>'text', 'n'=>'Amount', 'fs'=> 'PublicPost.TotalAmount'];
+        $fields[] = ['w'=> 180, 'r'=>0, 't'=>'text', 'n'=>'Status', 'fs'=> 'Status.Name'];
+        $fields[] = ['w'=> 0, 'h'=>1, 't'=>'text', 'n'=>'PublicPost', 'fs'=> 'data.PublicPost'];
+        return $fields;
+    }
+
+    public function presearch(Request $request) {
+        return [
+            [
+                'fieldToSave' => "Type",
+                'hideLabel' => true,
+                'type' => "combobox",
+                'column' => "1/3",
+                'source' => [],
+                'store' => "",
+                'source' => [
+                    ['Oid' => 'Requested', 'Name' => 'Requested'],
+                    ['Oid' => 'Approval', 'Name' => 'Approval'],
+                    ['Oid' => 'Upcoming', 'Name' => 'Upcoming'],
+                    ['Oid' => 'Approved', 'Name' => 'Approved'],
+                    ['Oid' => 'Rejected', 'Name' => 'Rejected'],
+                ],
+                'defaultValue' => "Approval"
+            ],
+            [
+                'type' => 'action',
+                'column' => '1/3'
+            ]
+        ];
+    }
+ 
+    public function config(Request $request) {
+        $fields = serverSideFields($this->fields(),false,true);
+        $fields[0]['cellRenderer'] = 'actionCell';
+        $fields[0]['topButton'] = [
+            [
+            'name' => 'New Purchase Request',
+            'icon' => 'DocumentIcon',
+            'type' => 'open_form',
+            'url' => "purchaseorder/form?type=PurchaseRequest"
+            ]
+        ];
+        return $fields;
+    }
+
+    public function list(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $type = $request->has('Type') ? $request->input('Type') : 'Requested';
+            $fields = serverSideFields($this->fields(),false,true);
+            $action = [];
+            if ($type == 'Requested') {
+                $query = "SELECT data.Oid FROM pubapproval data 
+                    LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+                    LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+                    WHERE data.User = '{$user->Oid}' 
+                    AND s.Code IN ('entry','request')
+                    AND data.Action = 'Request'
+                    AND data.Type IS NOT NULL
+                    ORDER BY data.CreatedAt DESC LIMIT 30";
+                $action[] = [
+                        'name' => 'Change to REQUEST',
+                        'icon' => 'UnlockIcon',
+                        'type' => 'confirm',
+                        'post' => 'publicapproval/request?Oid={Oid}',
+                        'afterRequest' => 'init'
+                ];   
+            } elseif ($type == 'Approval') {
+                $query = "SELECT data.Oid FROM pubapproval data 
+                    LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+                    LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+                    LEFT OUTER JOIN pubapproval prev ON p.Oid = prev.PublicPost AND prev.Sequence = data.Sequence - 1 AND prev.Action != 'Request'
+                    WHERE s.Code = 'submit'
+                    AND data.User = '{$user->Oid}' 
+                    AND data.ActionDate IS NULL
+                    AND data.Type IS NOT NULL
+                    AND IFNULL(data.Action,'') != 'Request'
+                    AND CASE WHEN data.Sequence = 1 THEN TRUE ELSE prev.ActionDate IS NOT NULL END
+                    ORDER BY data.CreatedAt DESC LIMIT 30";
+                $action[] = [
+                        'name' => 'Approve',
+                        'icon' => 'CheckCircleIcon',
+                        'type' => 'global_form',
+                        'form' => [
+                            [ 'fieldToSave' => 'Note',
+                            'type' => 'inputarea' ],
+                        ],
+                        'showModal' => false,
+                        'post' => 'publicapproval/approve?Oid={Oid}',
+                        'afterRequest' => 'init'
+                    ]; 
+                $action[] = [
+                        'name' => 'Reject',
+                        'icon' => 'XCircleIcon',
+                        'type' => 'global_form',
+                        'form' => [
+                            [ 'fieldToSave' => 'Note',
+                            'type' => 'inputarea' ],
+                        ],
+                        'showModal' => false,
+                        'post' => 'publicapproval/reject?Oid={Oid}',
+                        'afterRequest' => 'init'
+                ];
+            } elseif ($type == 'Upcoming') {
+                $query = "SELECT data.Oid FROM pubapproval data 
+                    LEFT OUTER JOIN pubapproval dataPrev 
+                    ON data.Code = dataPrev.Code 
+                    AND data.Company = dataPrev.Company 
+                    AND data.Type = dataPrev.Type
+                    AND dataPrev.Sequence = data.Sequence - 1
+                    LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+                    LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+                    WHERE s.Code IN ('submit','entry','request')
+                    AND data.User = '{$user->Oid}' 
+                    AND data.ActionDate IS NULL
+                    AND data.Sequence > 1 
+                    AND dataPrev.ActionDate IS NULL
+                    AND data.Type IS NOT NULL
+                    AND IFNULL(data.Action,'') != 'Request'
+                    ORDER BY dataPrev.ActionDate";
+                $action = [];
+            } elseif ($type == 'Approved') {
+                $query = "SELECT data.Oid FROM pubapproval data 
+                    LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+                    LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+                    WHERE data.User = '{$user->Oid}' 
+                    AND data.Action = 'Approve'
+                    AND data.ActionDate IS NOT NULL
+                    AND data.Type IS NOT NULL
+                    AND IFNULL(data.Action,'') != 'Request'
+                    ORDER BY data.ActionDate DESC LIMIT 30";
+                $action = [];
+            
+            } elseif ($type == 'Rejected') {
+                $query = "SELECT data.Oid FROM pubapproval data 
+                    LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+                    LEFT OUTER JOIN sysstatus s On s.Oid = p.Status                        
+                    WHERE data.User = '{$user->Oid}' 
+                    AND data.Action = 'Reject'
+                    AND data.ActionDate IS NOT NULL
+                    AND data.Type IS NOT NULL
+                    AND IFNULL(data.Action,'') != 'Request'
+                    ORDER BY data.ActionDate DESC LIMIT 30";             
+                $action = [];
+            }
+
+            $filter = DB::select($query);
+            $filter = collect($filter)->pluck('Oid');
+
+            $fields = serverSideFields($this->fields(),false,true);
+            $data = DB::table('pubapproval as data') //jointable
+                ->leftJoin('pubpost AS PublicPost', 'PublicPost.Oid', '=', 'data.PublicPost')
+                ->leftJoin('mstdepartment AS Department', 'Department.Oid', '=', 'PublicPost.Department')
+                ->leftJoin('company AS Company', 'Company.Oid', '=', 'data.Company')
+                ->leftJoin('user AS User', 'User.Oid', '=', 'PublicPost.User')
+                ->leftJoin('sysstatus AS Status', 'Status.Oid', '=', 'PublicPost.Status')
+                ;
+            if ($filter) $data->whereIn('data.Oid',$filter);
+            $data = serverSideQueryJSon($data, $fields, $request, 'pubapproval', 'UpdatedAt');
+            foreach ($data as $row) {
+                if ($row->Type == 'PurchaseOrder') {
+                    $tmp = PurchaseOrder::where('Code',$row->Code)->first();
+                    $row->Code = $tmp->PurchaseRequestCode;
+                }
+                $new = [];
+                $new = $action;
+                $new[] = [
+                    'name' => 'Open',
+                    'icon' => 'ArrowUpRightIcon',
+                    'type' => 'open_view',
+                    'portalget' => $this->functionGetUrl($row,"view"),
+                    'get' => $this->functionGetUrl($row,"get"),
+                ];
+                $new[] = [
+                    'name' => 'Open in detail',
+                    'icon' => 'ArrowUpRightIcon',
+                    'type' => 'open_form',
+                    'url' => $this->functionGetUrl($row),
+                ];
+                $row->Action = $new;
+            }
+            return serverSideReturn($data, $fields);
+
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    private function functionGetUrl($row, $type = null) {
+        if ($row->Type == 'PurchaseOrder') {            
+            $tmp = PurchaseOrder::where('Oid',$row->PublicPost)->first();
+            if ($type == null) return "purchaseorder/form?item={PublicPost}&type=".$tmp->Type."&returnUrl=publicapproval&Type={Type}";
+            elseif ($type == 'get') return "purchaseorder/{PublicPost}";
+            elseif ($type == 'view') return "development/table/vueview?code=PurchaseOrder";
+        } elseif ($row->Type == 'CashBank') {
+            $tmp = CashBank::where('Oid',$row->PublicPost)->first();
+            if ($type == null) return "cashbank/form?item={PublicPost}&type=".$tmp->Type."&returnUrl=publicapproval&Type={Type}";
+            elseif ($type == 'get') return "cashbank/{PublicPost}";
+            elseif ($type == 'view') return "development/table/vueview?code=CashBank";
+        }
+    }
+    
+    public function dashboard(Request $request) {
+        $user = Auth::user();        
+        $chart = [];
+        $dashboard = new DashboardChartController();
+        $default = [
+            'Subtitle' => "",
+            'DataType' => "Query",
+            'Sum' => "amount",
+            'ChartType' => "TitleArea",
+        ];  
+        
+        $query = "SELECT 'Circle' AS Icon, 'primary' AS Color, 'Require Approval' AS Title, COUNT(data.Oid) AS Amount FROM pubapproval data 
+            LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+            LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+            LEFT OUTER JOIN pubapproval prev ON p.Oid = prev.PublicPost AND prev.Sequence = data.Sequence - 1 AND prev.Action != 'Request'
+            WHERE s.Code = 'submit'
+            AND data.User = '{$user->Oid}' 
+            AND data.ActionDate IS NULL
+            AND data.Type IS NOT NULL
+            AND IFNULL(data.Action,'') != 'Request'
+            AND CASE WHEN data.Sequence = 1 THEN TRUE ELSE prev.ActionDate IS NOT NULL END
+            UNION ALL
+            SELECT 'Circle' AS Icon, 'primary' AS Color, 'Upcoming' AS Title, COUNT(data.Oid) AS Amount FROM pubapproval data 
+            LEFT OUTER JOIN pubapproval dataPrev 
+            ON data.Code = dataPrev.Code 
+            AND data.Company = dataPrev.Company 
+            AND data.Type = dataPrev.Type
+            AND dataPrev.Sequence = data.Sequence - 1
+            LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+            LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+            WHERE s.Code IN ('submit','entry','request')
+            AND data.User = '{$user->Oid}' 
+            AND data.ActionDate IS NULL
+            AND data.Sequence > 1 
+            AND dataPrev.ActionDate IS NULL
+            AND data.Type IS NOT NULL
+            AND IFNULL(data.Action,'') != 'Request'
+            UNION ALL
+            SELECT 'Circle' AS Icon, 'primary' AS Color, 'Approve Today' AS Title, COUNT(data.Oid) AS Amount FROM pubapproval data 
+            LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+            LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+            WHERE data.User = '{$user->Oid}' 
+            AND data.Action = 'Approve'
+            AND data.ActionDate IS NOT NULL
+            AND data.Type IS NOT NULL
+            AND IFNULL(data.Action,'') != 'Request'
+            AND DATE_FORMAT(data.CreatedAt, '%Y-%m-%d') >= DATE_FORMAT(now(), '%Y-%m-%d')";
+        $tmp = array_merge($default, [
+            'Sequence' => 1,
+            'Title' => "Approval Summary",
+            'Icon' => "dollar-sign",
+            'Color' => "primary",
+            'Criteria' => $query,
+            'Url' => 'publicapproval?Type=Approval'
+        ]);
+        $chart[] = $dashboard->chartListBulletin($tmp);
+
+        $query = "SELECT 'Circle' AS Icon, 'primary' AS Color, UPPER(co.Code) AS Title, COUNT(data.Oid) AS Amount FROM pubapproval data 
+                LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+                LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+                LEFT OUTER JOIN company co ON co.Oid = p.Company
+                LEFT OUTER JOIN pubapproval prev ON p.Oid = prev.PublicPost AND prev.Sequence = data.Sequence - 1 AND prev.Action != 'Request'
+                WHERE s.Code = 'submit'
+                AND data.User = '[user]' 
+                AND data.ActionDate IS NULL
+                AND data.Type IS NOT NULL
+                AND IFNULL(data.Action,'') != 'Request'
+                AND CASE WHEN data.Sequence = 1 THEN TRUE ELSE prev.ActionDate IS NOT NULL END
+                GROUP BY co.Code
+                ORDER BY COUNT(data.Oid) DESC
+                LIMIT 5";
+        $tmp = array_merge($default, [
+            'Sequence' => 2,
+            'Title' => "Approval Per Company",
+            'Icon' => "dollar-sign",
+            'Color' => "primary",
+            'Criteria' => $query,
+            'Url' => 'publicapproval?Type=Approval'
+        ]);
+        $chart[] = $dashboard->chartListBulletin($tmp);
+
+        $query = "SELECT 'Circle' AS Icon, 'primary' AS Color, p.ObjectType AS Title, COUNT(data.Oid) AS Amount FROM pubapproval data 
+            LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+            LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+            LEFT OUTER JOIN company co ON co.Oid = p.Company
+            LEFT OUTER JOIN pubapproval prev ON p.Oid = prev.PublicPost AND prev.Sequence = data.Sequence - 1 AND prev.Action != 'Request'
+            WHERE s.Code = 'submit'
+            AND data.User = '[user]' 
+            AND data.ActionDate IS NULL
+            AND data.Type IS NOT NULL
+            AND IFNULL(data.Action,'') != 'Request'
+            AND CASE WHEN data.Sequence = 1 THEN TRUE ELSE prev.ActionDate IS NOT NULL END
+            GROUP BY p.ObjectType
+            ORDER BY COUNT(data.Oid) DESC
+            LIMIT 5";
+        $tmp = array_merge($default, [
+            'Sequence' => 3,
+            'Title' => "Approval Per Type",
+            'Icon' => "dollar-sign",
+            'Color' => "primary",
+            'Criteria' => $query,
+            'Url' => 'publicapproval?Type=Approval'
+        ]);
+        $chart[] = $dashboard->chartListBulletin($tmp);
+
+        $query = "SELECT 'Circle' AS Icon, 'primary' AS Color, UPPER(co.Code) AS Title, COUNT(data.Oid) AS Amount 
+            FROM pubapproval data 
+            LEFT OUTER JOIN pubapproval dataPrev 
+            ON data.Code = dataPrev.Code 
+            AND data.Company = dataPrev.Company 
+            AND data.Type = dataPrev.Type
+            AND dataPrev.Sequence = data.Sequence - 1
+            LEFT OUTER JOIN pubpost p ON data.PublicPost = p.Oid
+            LEFT OUTER JOIN company co ON co.Oid = p.Company
+            LEFT OUTER JOIN sysstatus s On s.Oid = p.Status
+            WHERE s.Code IN ('submit','entry','request')
+            AND data.User = '[user]' 
+            AND data.ActionDate IS NULL
+            AND data.Sequence > 1 
+            AND dataPrev.ActionDate IS NULL
+            AND data.Type IS NOT NULL
+            AND IFNULL(data.Action,'') != 'Request'
+            GROUP BY co.Code
+            ORDER BY COUNT(data.Oid) DESC
+            LIMIT 5";
+        $tmp = array_merge($default, [
+            'Sequence' => 4,
+            'Title' => "Upcoming Per Company",
+            'Icon' => "dollar-sign",
+            'Color' => "primary",
+            'Criteria' => $query,
+            'Url' => 'publicapproval?Type=Approval'
+        ]);
+        $chart[] = $dashboard->chartListBulletin($tmp);
+
+        return $chart;
+    }
+
+    public function formAction($data, $module, $for) {
+        $user = Auth::user();
+        
+        if ($for == 'submit') return [
+            'name' => 'Submit',
+            'icon' => 'ArrowUpCircleIcon',
+            'type' => 'confirm',
+            'post' => 'publicapproval/submit?'.$module.'={Oid}',
+            'afterRequest' => 'init'
+        ];
+        
+        if ($for == 'request') return [
+            'name' => 'Request',
+            'icon' => 'ArrowUpCircleIcon',
+            'type' => 'confirm',
+            'post' => 'publicapproval/request?'.$module.'={Oid}',
+            'afterRequest' => 'init'
+        ];
+
+        $actionApprove = [
+            'name' => 'Approve',
+            'icon' => 'CheckCircleIcon',
+            'type' => 'global_form',
+            'form' => [
+              [ 'fieldToSave' => 'Note',
+                'type' => 'inputarea' ],
+            ],
+            'showModal' => false,
+            'post' => 'publicapproval/approve?'.$module.'={Oid}',
+            'afterRequest' => 'init'
+        ];
+        $actionReject = [
+            'name' => 'Reject',
+            'icon' => 'actionReject',
+            'type' => 'global_form',
+            'form' => [
+              [ 'fieldToSave' => 'Note',
+                'type' => 'inputarea' ],
+            ],
+            'showModal' => false,
+            'post' => 'publicapproval/reject?'.$module.'={Oid}',
+            'afterRequest' => 'init'
+        ];
+        $approval = PublicApproval::where($module, $data->Oid)->where('User',$user->Oid)->whereNull('ActionDate')->first();
+        if ($approval) $approvalPrevious = PublicApproval::where($module, $data->Oid)->where('Sequence',$approval->Sequence - 1)->whereNotNull('ActionDate')->first();
+        $return = [];
+        if ($approval) {
+            if ($approval->Sequence == 1 || $approvalPrevious) {
+                $return[] = $actionApprove;
+                $return[] = $actionReject;
+                return $return;
+            } 
+        }
+        return [];
+    }
+
+    public function formApprovalReset($data) {
+        foreach($data->Approvals as $row) {
+            $row->Action = null;
+            $row->ActionDate = null;
+            $row->Note = null;
+            $row->save();
+        }        
+    }
+
+    private function newPublicApproval($data, $department, $sequence, $type) {
+        if (!$department->{'Approval'.$sequence}) return;
+        $tmp = new PublicApproval();
+        $tmp->Company = $data->Company;
+        $tmp->PublicPost = $data->Oid;
+        $tmp->{$type} = $data->Oid;
+        $tmp->Sequence = $sequence;
+        $tmp->User = $department->{'Approval'.$sequence};
+        $tmp->Type = $type;
+        if ($sequence < 3) $tmp->NextUser = $department->{'Approval'.($sequence + 1)};
+        $tmp->save();
+    }
+
+    public function formCreate($data, $type) {
+        $user = Auth::user();
+        $department = Department::findOrFail($data->Department);
+        DB::delete("DELETE FROM pubapproval WHERE PublicPost = '{$data->Oid}'");
+        $this->newPublicApproval($data, $department, 1, $type);
+        $this->newPublicApproval($data, $department, 2, $type);
+        $this->newPublicApproval($data, $department, 3, $type);
+        if ($type == 'PurchaseOrder') $data->Purchaser = $department->Purchaser;
+        $data->save();
+        if ($type == 'PurchaseOrder') {
+            if ($data->Purchaser != $data->CreatedBy) {
+                $tmp = new PublicApproval();
+                $tmp->Company = $data->Company;
+                $tmp->{$type} = $data->Oid;
+                $tmp->User = $data->CreatedBy;
+                $tmp->Type = $type;
+                $tmp->Action = 'Request';
+                $tmp->save();
+            }
+        }
+    }
+
+    private function findData($request) {
+        if ($request->has('Oid')) {
+            $tmp = PublicApproval::findOrFail($request->input('Oid'));
+            $module = $tmp->Type;
+            $oid = $tmp->PublicPost;
+        } elseif ($request->has('PurchaseOrder')) {
+            $module = 'PurchaseOrder';
+            $oid = $request->input('PurchaseOrder');
+        } elseif ($request->has('CashBank')) {
+            $module = 'CashBank';
+            $oid = $request->input('CashBank');
+        }
+        switch ($module) {
+            case 'PurchaseOrder':
+                return [
+                    'data' => PurchaseOrder::where('Oid',$oid)->first(),
+                    'module' => $module,
+                ];                
+            case 'CashBank':
+                return [
+                    'data' => CashBank::where('Oid',$oid)->first(),
+                    'module' => $module,
+                ];
+        }
+    }
+
+    private function clearNotication($data, $allUser = true) {
+        $user = Auth::user();
+        
+        // $notifications = Notification::whereNull('GCRecord')
+        //     ->where('PublicPost', $data->Oid)
+        //     ->whereNull('DateRead')
+        //     ->where('User',$user->Oid)
+        //     ->where('Type','Approve');
+        
+        $criteria = '';
+        if (!$allUser) {
+            $criteria = " AND User='".$user->Oid."' ";
+            // $notifications = $notifications->where('User', $user->Oid);
+        }
+
+        $query = "UPDATE notification SET DateRead = now() 
+            WHERE DateRead IS NULL             
+            AND PublicPost='{$data->Oid}'
+            AND Type='Approve' ".$criteria;
+        DB::update($query);
+
+        // $notifications = $notifications->get();
+        // foreach($notifications as $row) {
+        //     $row->DateRead = now();
+        //     $row->save();
+        // }
+    }
+    
+    public function statusRequest(Request $request) {
+        try {
+            DB::transaction(function () use ($request, &$data) {
+                $user = Auth::user();
+
+                $tmp = $this->findData($request);
+                $data = $tmp['data'];
+                $module = $tmp['module'];
+
+                $this->clearNotication($data, true);
+                                
+                //VALIDATION
+                $data->Status = Status::where('Code','request')->first()->Oid;
+                $data->save();
+
+                $this->publicPostController->sync($data, $module);
+                
+                //NOTIFICATION NEXT USER
+                if ($data->DepartmentObj->Purchaser && $data->DepartmentObj->Purchaser != $user->Oid) {
+                    $code = $tmp['module'] == 'PurchaseOrder' ? $data->PurchaseRequestCode : $data->Code;
+                    $param = [
+                        'User' => $data->DepartmentObj->Purchaser,
+                        'Company' => $data->Company,
+                        'ObjectType' => $module,
+                        'PublicPost' => $data->Oid,
+                        'Code' => $code,
+                        'Title' => $tmp['module'].' needs Approval',
+                        'Message' => $code . ', requested: ' . $user->UserName,
+                        'Action' => strtolower($module).'/form?item=' . $data->Oid,
+                        'Type' => 'Approve',
+                    ];
+                    event(new EventSendNotificationSocketOneSignal($param));
+                }
+            });
+                
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function statusSubmit(Request $request) {        
+        try {
+            DB::transaction(function () use ($request, &$data) {
+                $user = Auth::user();
+
+                $tmp = $this->findData($request);
+                $data = $tmp['data'];
+                if (!$data->Department) throw new UserFriendlyException('Department must be filled');
+                $module = $tmp['module'];
+
+                $this->clearNotication($data, true);
+                
+                //VALIDATION
+                $data->Status = Status::where('Code','submit')->first()->Oid;
+                $data->save();
+                $this->publicPostController->sync($data, $module);
+                                
+                //NOTIFICATION NEXT USER
+                $approval = PublicApproval::where("PublicPost",$data->Oid)->where('Sequence',1)->first();
+                if ($approval) {
+                    $code = $tmp['module'] == 'PurchaseOrder' ? $data->PurchaseRequestCode : $data->Code;
+                    $param = [
+                        'User' => $approval->User,
+                        'Company' => $data->Company,
+                        'ObjectType' => $module,
+                        'PublicPost' => $data->Oid,
+                        'Code' => $code,
+                        'Title' => $tmp['module'].' needs Approval',
+                        'Message' => $code . ', submitted: ' . $user->UserName,
+                        'Action' => strtolower($module).'/form?item=' . $data->Oid,
+                        'Type' => 'Approve',
+                    ];
+                    event(new EventSendNotificationSocketOneSignal($param));
+                } else {
+                    if ($tmp['module'] == 'CashBank') $this->cashBankService->post($data->Oid);
+                    else {
+                        $data->Status = Status::where('Code','posted')->first()->Oid;
+                        $data->save();
+                    }
+                    $this->publicPostController->sync($data, $module);
+                }
+            });
+                
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function statusApprove(Request $request) {
+        try {
+            DB::transaction(function () use ($request, &$data) {
+                $user = Auth::user();
+
+                $tmp = $this->findData($request);
+                $data = $tmp['data'];
+                $module = $tmp['module'];
+                
+                //VALIDATION
+                $approval = PublicApproval::where('PublicPost', $data->Oid)->where('User',$user->Oid)->whereNull('ActionDate')->first();
+                $approvalPrevious = PublicApproval::where($module, $data->Oid)->where('Sequence',$approval->Sequence - 1)->whereNotNull('ActionDate')->first();
+                $approvalNext = PublicApproval::where($module, $data->Oid)->where('Sequence',$approval->Sequence + 1)->first();
+                if (!$approval) throw new UserFriendlyException('You are failed to approve this request');
+                if ($approval->Sequence > 1 && !$approvalPrevious) throw new UserFriendlyException('You are failed to approve this request');
+                
+                $this->clearNotication($data, false);
+                
+                //NOTIFICATION NEXT USER
+                if ($approvalNext) {
+                    $code = $tmp['module'] == 'PurchaseOrder' ? $data->PurchaseRequestCode : $data->Code;
+                    $param = [
+                        'User' => $approvalNext->User,
+                        'Company' => $data->Company,
+                        'ObjectType' => $module,
+                        'PublicPost' => $data->Oid,
+                        'Code' => $code,
+                        'Title' => $tmp['module'].' needs Approval',
+                        'Message' => $code.', approved: ' . $user->Name,
+                        'Action' => strtolower($module).'/form?item=' . $data->Oid,
+                        'Type' => 'Approve',
+                    ];
+                    event(new EventSendNotificationSocketOneSignal($param));
+                }
+
+                $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+                $approval->Action = 'Approve';
+                $approval->ActionDate = now()->addHours(company_timezone())->toDateTimeString();
+                if (isset($request->Note)) $approval->Note = $request->Note;
+                $approval->save();
+                
+                if (!$approvalNext) {
+                    if ($module == 'PurchaseOrder') {
+                        $code = $tmp['module'] == 'PurchaseOrder' ? $data->PurchaseRequestCode : $data->Code;
+                        $message = $code.', approved: ' . $user->Name.(isset($request->Note) ? '\r\n'.$request->Note : null);
+                        if ($data->Purchaser) {
+                            $param = [
+                                'User' => $data->Purchaser,
+                                'Company' => $data->Company,
+                                'ObjectType' => $module,
+                                'PublicPost' => $data->Oid,
+                                'Code' => $code,
+                                'Title' => $tmp['module'].' '.$code.', approved by ' . $user->Name,
+                                'Message' => $message,
+                                'Action' => strtolower($module).'/form?item=' . $data->Oid,
+                                'Type' => 'Approve',
+                            ];
+                            event(new EventSendNotificationSocketOneSignal($param));
+                        }
+                    }
+                }
+                
+                if (!$approvalNext) {                    
+                    if ($tmp['module'] == 'CashBank') $this->cashBankService->post($data->Oid);
+                    else {
+                        if ($tmp['module'] == 'PurchaseOrder') {
+                            $data->Type = 'PurchaseOrder';
+                            $data->Code = $this->autoNumberService->generate($data, 'trdpurchaseorder');
+                        }
+                        $data->Status = Status::where('Code','posted')->first()->Oid;
+                        $data->save();
+                    }
+                    $this->publicPostController->sync($data, $module);
+                }
+            });
+                
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    
+    public function statusReject(Request $request) {
+        try {
+            DB::transaction(function () use ($request, &$data) {
+                $user = Auth::user();
+
+                $tmp = $this->findData($request);
+                $data = $tmp['data'];
+                $module = $tmp['module'];
+                
+                //VALIDATION
+                $approval = PublicApproval::where($module, $data->Oid)->where('User',$user->Oid)->whereNull('ActionDate')->first();
+                $approvalPrevious = PublicApproval::where($module, $data->Oid)->where('Sequence',$approval->Sequence - 1)->whereNotNull('ActionDate')->first();
+                $approvalNext = PublicApproval::where($module, $data->Oid)->where('Sequence',$approval->Sequence + 1)->first();
+                if (!$approval) throw new UserFriendlyException('You are failed to approve this request');
+                if ($approval->Sequence > 1 && !$approvalPrevious) throw new UserFriendlyException('You are failed to approve this request');                
+                
+                $this->clearNotication($data, true);
+
+                $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+                $approval->Action = 'Reject';
+                $approval->ActionDate = now()->addHours(company_timezone())->toDateTimeString();
+                if (isset($request->Note)) $approval->Note = $request->Note;
+                $approval->save();
+                
+                $data->Status = Status::where('Code','reject')->first()->Oid;
+                $data->save();
+                
+                $this->publicPostController->sync($data, $module);
+
+                $code = $tmp['module'] == 'PurchaseOrder' ? $data->PurchaseRequestCode : $data->Code;
+                $message = 'PR: ' . $code . ', rejected: ' . $user->Name.(isset($request->Note) ? '\r\n'.$request->Note : null);        
+                if ($module == 'PurchaseOrder') {
+                    if ($data->Purchaser) {
+                        $param = [
+                            'User' => $data->Purchaser,
+                            'Company' => $data->Company,
+                            'ObjectType' => $module,
+                            'PublicPost' => $data->Oid,
+                            'Code' => $code,
+                            'Title' => $tmp['module'].' '.$code.', approved by ' . $user->Name,
+                            'Message' => $message,
+                            'Action' => strtolower($module).'/form?item=' . $data->Oid,
+                            'Type' => 'Reject',
+                        ];
+                        event(new EventSendNotificationSocketOneSignal($param));
+                    }
+                }
+            });
+                
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+
+}

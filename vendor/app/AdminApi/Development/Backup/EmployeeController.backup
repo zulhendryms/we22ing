@@ -1,0 +1,356 @@
+<?php
+
+namespace App\AdminApi\Master\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Master\Entities\Employee;
+use App\Core\Master\Entities\EmployeeContact;
+use App\Core\Master\Resources\EmployeeResource;
+use App\Core\Master\Resources\EmployeeCollection;
+use App\Core\Master\Entities\BusinessPartner;
+use App\Core\Internal\Entities\BusinessPartnerRole;
+use App\Core\Master\Entities\BusinessPartnerGroup;
+use App\Core\Master\Entities\BusinessPartnerAccountGroup;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Core\Base\Services\CoreService;
+use App\Core\Security\Services\RoleModuleService;
+use Validator;
+
+class EmployeeController extends Controller
+{
+    protected $roleService;
+    private $coreService;
+
+    public function __construct(CoreService $coreService,RoleModuleService $roleService)
+    {
+        $this->coreService = $coreService;
+        $this->roleService = $roleService;
+    }
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('IsActive');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Name');
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'combo', 'n'=>'EmployeePosition', 'f'=>'ep.Name',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'Email',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'Phone',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'Address',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'TaxNo',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'NickName',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'IdentityNumber',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'Sex',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'Phone2',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'textarea', 'n'=>'Note',];
+        $fields[] = [ 'w'=>150, 't'=>'combo', 'n'=>'TravelGuideGroup', 'f'=>'TravelGuideGroup.Name' ];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'date', 'n'=>'DateJoin',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'date', 'n'=>'DateEnd',];
+        return $fields;
+    }
+
+    public function config(Request $request) {
+        $fields = serverSideFields($this->fields());
+        foreach ($fields as &$row) { //combosource
+            if ($row['headerName'] == 'EmployeePosition') $row['source'] = comboSelect('mstemployeeposition');
+            elseif ($row['headerName'] == 'TravelGuideGroup') $row['source'] = comboselect('trvguidegroup');
+            elseif ($row['headerName']  == 'Company') $row['source'] = comboselect('company');
+        }
+        return $fields;
+    }
+    public function list(Request $request) {
+        $company = Auth::user()->CompanyObj;
+        $fields = $this->fields();
+        $data = DB::table('mstemployee as data') //jointable
+            ->leftJoin('company AS Company', 'Company.Oid', '=', 'data.Company')
+            ->leftJoin('mstemployeeposition AS ep', 'ep.Oid', '=', 'data.EmployeePosition')
+            ->leftJoin('trvguidegroup AS TravelGuideGroup', 'TravelGuideGroup.Oid', '=', 'data.TravelGuideGroup')
+            ;
+        if ($request->query->has('filter')) {
+            if ($request->query('filter') == 1) {
+                if($company->POSEmployeeFilter) $data = $data->where('ep.Code', $company->POSEmployeeFilter);
+            } else {
+                if($company->POSEmployee2Filter) $data = $data->where('ep.Code', $company->POSEmployee2Filter);
+            }     
+        }        
+        $data = serverSideQuery($data, $fields, $request, 'mstemployee');
+        $role = $this->roleService->list('Employee'); //rolepermission
+        foreach($data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+        return serverSideReturn($data, $fields);
+    }
+    public function detailfields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'text', 'n'=>'Employee',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'text', 'n'=>'Position',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'text', 'n'=>'Phone',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'text', 'n'=>'Email',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'text', 'n'=>'Address',];
+
+        return $fields;
+    }
+    public function detailconfig(Request $request) {
+        $fields = serverSideFields($this->detailfields(),true);
+        foreach ($fields as &$row) { //combosource
+        }
+        $result = [];
+        $result[] = [
+            "fieldToSave" => "Contacts",
+            "addButton" => true,
+            "showPopup" => false,
+            "data" => $fields
+        ];
+        return $result;
+    }
+    
+
+    public function index(Request $request)
+    {        
+        try {            
+            $user = Auth::user();
+            $company = Auth::user()->CompanyObj;
+            $type = $request->input('type') ?: 'combo';
+            $data = Employee::whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);    
+            if ($request->query->has('filter')) {
+                if ($request->query('filter') == 1) {
+                    if($company->POSEmployeeFilter){
+                        $data->whereHas('EmployeePositionObj', function ($query) use($company) {
+                            $query->where('Code', $company->POSEmployeeFilter);
+                        });
+                    }
+                } else {
+                    if($company->POSEmployee2Filter){
+                        $data->whereHas('EmployeePositionObj', function ($query) use($company) {
+                            $query->where('Code', $company->POSEmployee2Filter);
+                        });
+                    }  
+                }     
+            }        
+            $data = $data->orderBy('Name')->get();
+            return (new EmployeeCollection($data))->type($type);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    
+    public function show(Employee $data)
+    {
+        try {            
+            $data = Employee::with('Contacts')->findOrFail($data->Oid);
+            return $data;
+            // return (new EmployeeResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function savetoken(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent())))); //WILLIAM ZEF
+        $dataArray = object_to_array($request);
+        
+        $messsages = array(
+            'Code.required'=>__('_.Code').__('error.required'),
+            'Code.max'=>__('_.Code').__('error.max'),
+            'Name.required'=>__('_.Name').__('error.required'),
+            'Name.max'=>__('_.Name').__('error.max'),
+            'EmployeePosition.required'=>__('_.EmployeePosition').__('error.required'),
+            'EmployeePosition.exists'=>__('_.EmployeePosition').__('error.exists'),
+            'TravelGuideGroup.exists' => __('_.TravelGuideGroup').__('error.exists'),
+        );
+        $rules = array(
+            'Code' => 'required|max:255',
+            'Name' => 'required|max:255',
+            'EmployeePosition' => 'required|exists:mstemployeeposition,Oid',
+            'Religion' => 'numeric',
+            'Sex' => 'numeric',
+            'TravelGuideGroup' => 'required|exists:trvguidegroup,Oid',
+        );
+
+        $validator = Validator::make($dataArray, $rules,$messsages);
+
+        if ($validator->fails()) {
+            return response()->json(
+                $validator->messages(),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        try {            
+            if (!$Oid) $data = new Employee();
+            else $data = Employee::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                // $data->Company = Auth::user()->Company;
+                $data->Code = $request->Code == '<<Auto>>' ? now()->format('ymdHis').'-'.str_random(3) : $request->Code;
+                $data->Name = $request->Name;
+                $data->EmployeePosition = $request->EmployeePosition;
+                $data->IsActive = $request->IsActive;
+                $data->save();
+            });
+
+            $data = (new EmployeeResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+
+    public function save(Request $request, $Oid = null)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+        $dataArray = object_to_array($request);
+        $messsages = array(
+            'Code.required'=>__('_.Code').__('error.required'),
+            'Code.max'=>__('_.Code').__('error.max'),
+            'Name.required'=>__('_.Name').__('error.required'),
+            'Name.max'=>__('_.Name').__('error.max'),
+            'EmployeePosition.required'=>__('_.EmployeePosition').__('error.required'),
+            'EmployeePosition.exists'=>__('_.EmployeePosition').__('error.exists'),
+        );
+        $rules = array(
+            'Code' => 'required|max:255',
+            'Name' => 'required|max:255',
+            'EmployeePosition' => 'required|exists:mstemployeeposition,Oid',
+        );
+
+        $validator = Validator::make($dataArray, $rules,$messsages);
+
+        if ($validator->fails()) {
+            return response()->json(
+                $validator->messages(),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        try {            
+            if (!$Oid) $data = new Employee();
+            else $data = Employee::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $data = serverSideSave($data,$request,['Contacts']);
+                $data->save();
+
+                if (isset($request->Contacts)) {
+                    serverSideSaveDetail($data->Contacts, $request->Contacts);
+                    $data->load('Contacts');
+                    $data->fresh();
+                }
+                if(!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('Employee'); //rolepermission
+            $data->EmployeePositionName = $data->EmployeePositionObj ? $data->EmployeePositionObj->Name : null;
+            $data->Role = $this->roleService->generateActionMaster($role);
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(Employee $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->Contacts()->delete();
+                $data->delete();
+            });
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function sendEmployee()
+    {
+        try {     
+            $bprole = BusinessPartnerRole::where('Code','TrvOutlet')->first();
+            $bp = BusinessPartner::where('BusinessPartnerRole',$bprole->Oid)->whereNotNull('Token')->get();  
+            $employee = Employee::whereNull('GCRecord')->whereHas('EmployeePositionObj', function ($query) {
+                $query->where('Code', company()->POSEmployeeFilter);
+            })->where('IsActive',true)->get();
+
+            foreach($bp as $row){
+                $this->coreService->postapi("/admin/api/v1/employee/send",$row->Token, ['Data' => $employee ]);
+            }
+
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+           
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function receiveEmployee(Request $request)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+    
+        try {
+            foreach ($request->Data as $row) {
+                
+                $data = BusinessPartner::where('Oid',$row->Oid)->first();
+                if (!$data) $data = new BusinessPartner();
+
+                $bprole = BusinessPartnerRole::where('Code','Customer')->first();
+                $bpg = BusinessPartnerGroup::where('BusinessPartnerRole',$bprole->Oid)->first();
+                $data->Company = company()->Oid;
+                $data->Oid = $row->Oid;
+                $data->Code = $row->Code;
+                $data->Name = $row->Name;
+                $data->BusinessPartnerRole = $bprole->Oid;
+                $data->BusinessPartnerGroup = $bpg->Oid;
+                $data->BusinessPartnerAccountGroup = $bpg->BusinessPartnerAccountGroup ?: null;
+                if($bpg->BusinessPartnerAccountGroup){
+                    $bpag = BusinessPartnerAccountGroup::findOrFail($bpg->BusinessPartnerAccountGroup);
+                    $data->IsPurchase = $bpag->IsPurchase;
+                    $data->IsSales = $bpag->IsSales;
+                    $data->PurchaseCurrency = $bpag->PurchaseCurrency;
+                    $data->SalesCurrency = $bpag->SalesCurrency;
+                    $data->PurchaseTax = $bpag->PurchaseTax;
+                    $data->PurchaseTerm = $bpag->PurchaseTerm;
+                    $data->SalesTax = $bpag->SalesTax;
+                    $data->SalesTerm = $bpag->SalesTerm;
+                }
+                $data->City = company()->City;
+                $data->IsActive = 1;
+                $data->save();
+                logger($data);
+            }
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+}

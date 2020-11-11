@@ -1,0 +1,163 @@
+<?php
+
+namespace App\Core\Internal\Services;
+
+use App\Core\Internal\Entities\AuditedObjectWeakReference;
+use App\Core\Internal\Entities\AutoNumberSetup;
+use App\Core\Internal\Entities\AutoNumber;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Auth;
+
+class AutoNumberService 
+{
+    public function generate($oid, $tableQuery, $fieldName = 'Code')
+    {   
+        // type = 0 IsDefault
+        // type = 1 IsPrefixSuffix
+        // type = 2 IsDirect
+        $user = Auth::user();
+        $setup = AutoNumberSetup::where('TableQuery',$tableQuery)->where('FieldName',$fieldName)->first();
+        if (!$setup) return now()->format('mdHis').str_random(2);
+        $class = config('autonumber.'.$tableQuery);
+        if (is_null($class)) return now()->format('mdHis').str_random(2);
+        throw_if(is_null($class), new ModelNotFoundException("Model for $tableQuery not found"));
+        $check = $class::whereIn($fieldName,['<<AutoGenerate>>','<<Auto>>'])->where('Oid','!=',$oid)->get();
+        foreach($check as $row) {
+            $row->{$fieldName} = now()->format('dHismy').str_random(2);
+            $row->save();
+        }
+        $object = $class::where('Oid',$oid)->first();
+        if (!in_array($object->{$fieldName},['<<AutoGenerate>>','<<Auto>>'])) return $object->{$fieldName};
+        $prefix = isset($setup->Prefix) && $setup->Type != 0 ? $this->parseExpression($object, $setup->Prefix) : '';
+        $suffix = isset($setup->Suffix) && $setup->Type != 0 ? $this->parseExpression($object, $setup->Suffix) : '';
+        $filter = " WHERE Company = '{$object->Company}' AND TableQuery = '{$setup->TableQuery}' AND FieldName = '{$setup->FieldName}'";
+        
+        $query =  "SELECT Number FROM sysautonumber";
+        $number = 1;
+        if ($setup->IsDefault) {
+            $number = DB::select($query.$filter);
+            if (count($number) == 0) {
+                $number = 0;
+            } else {
+                $number = $number[0]->Number;
+            };
+            if (empty($number)) {
+                AutoNumber::create([
+                    'FieldName' => $setup->FieldName,
+                    'Company' => $object->Company,
+                    'Number' => 1,
+                    'TableQuery' => $setup->TableQuery
+                ]);
+            }
+        } else if ($setup->IsPrefixSuffix) {
+            if (!empty($prefix)) {
+                $filter .= " AND Prefix='{$prefix}'";
+            }
+            if (!empty($suffix)) {
+                $filter .= " AND Suffix='{$suffix}'";
+            }
+            $number = DB::select($query.$filter);
+            if (count($number) == 0) {
+                $number = 0;
+            } else {
+                $number = $number[0]->Number;
+            }
+            if (empty($number)) {
+                AutoNumber::create([
+                    'FieldName' => $setup->FieldName,
+                    'Company' => $object->Company,
+                    'Number' => 1,
+                    'Prefix' => $prefix,
+                    'Suffix' => $suffix,
+                    'TableQuery' => $setup->TableQuery
+                ]);
+            }
+        } else if ($setup->IsDirect) {
+            $query = "SELECT COUNT(Oid) FROM {$setup->TableName} WHERE {$setup->FieldName} LIKE '{$prefix}%'";
+            $number = DB::select($query.$filter);
+            if (count($number) == 0) {
+                $number = 0;
+            } else {
+                $number = $number[0]->Number;
+            }
+            if (empty($number)) {
+                $number = 1;
+            }
+            $number = chr(64 + $number);
+        }
+
+        if (!$setup->IsDirect) {
+            if (!empty($number)) {
+                DB::update("UPDATE sysautonumber SET Number=Number+1".$filter);
+            }
+            $number = $number + 1;
+            $number = str_pad($number, $setup->Digit, '0', STR_PAD_LEFT);
+        }
+        $value = $prefix.$number.$suffix;
+        $object->{$setup->FieldName} = $value;
+        $object->save();
+
+        return $value;
+    }
+
+    protected function parseExpression($object, $exp)
+    {
+        $query = "";
+        $index = 0;
+        if (empty($exp)) return "";
+        while ($index < strlen($exp)) {
+            $value = "";
+            $startIndex = strpos($exp, '[', $index);
+            if ($startIndex === false) {
+                $value = "'".substr($exp, $index)."'";
+                $index += strlen($value);
+            } else {
+                $endIndex = strpos($exp, ']', $startIndex);
+                if ($index != $startIndex) {
+                    $value = "'".substr($exp, $index, $startIndex - $index)."'";
+                    $index = $startIndex;
+                } else {
+                    $propertyName = substr($exp, $startIndex + 1, $endIndex - ($index == 0 ? 1 : $index + 1));
+                    if (strpos($propertyName, '(') !== false && strpos($propertyName, ')') !== false) {
+                        if (strpos($propertyName, '@')) {
+                            $si = strpos($propertyName, '@') + 1;
+                            $ei = strpos($propertyName, ',', $si) - $si;
+                            $prop = substr($propertyName, strpos($propertyName, '@') + 1, $ei);
+                            $value = $this->getValue($object, $prop);
+                            if (strtotime($value)) {
+                                $value = Carbon::parse($value)->toDateString();
+                            }
+                            $value = str_replace("@".$prop, "'".$value."'", $propertyName);
+                        } else {
+                            $value = $propertyName;
+                        }
+                    } else {
+                        $value = $this->getValue($object, $propertyName);
+                        if (strtotime($value)) {
+                            $value = Carbon::parse($value)->toDateString();
+                        }
+                        $value = "'".$value."'";
+                    }
+                    $index = $endIndex + 1;
+                }
+            }
+            if (!empty($query)) $query.=",";
+            $query .= $value;
+        }
+        $query = "CONCAT(".$query.") AS Value";
+        $result = "";
+        $row = DB::select("SELECT ".$query);
+        return $row[0]->Value;
+    }
+
+    protected function getValue($obj, $path)
+    {
+        $value = clone $obj;
+        $propertyNames = explode('.', $path);
+        foreach ($propertyNames as $name) {
+            $value = $value->{$name};
+        }
+        return $value;
+    }
+}

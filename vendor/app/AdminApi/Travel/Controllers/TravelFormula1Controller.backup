@@ -1,0 +1,132 @@
+<?php
+
+namespace App\AdminApi\Travel\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Travel\Entities\TravelFormula1;
+use App\Core\Travel\Entities\TravelFormula1Detail;
+use App\Core\Security\Services\RoleModuleService;
+use App\AdminApi\Development\Controllers\CRUDLogicController;
+
+class TravelFormula1Controller extends Controller
+{
+    protected $roleService;
+    public function __construct(
+        RoleModuleService $roleService
+    ) {
+        $this->roleService = $roleService;
+        $this->crudController = new CRUDLogicController();
+    }
+
+    public function config(Request $request)
+    {
+        $data = $this->crudController->config('trvformula1');
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    public function list(Request $request)
+    {
+        $data = DB::table('trvformula1 as data');
+        $data = $this->crudController->list('trvformula1', $data, $request);
+        $role = $this->roleService->list('TravelFormula1'); //rolepermission
+        foreach ($data->data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    public function index(Request $request)
+    {
+        $data = DB::table('trvformula1 as data');
+        $data = $this->crudController->getIndex($data, $request, 'Name');
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    private function showSub($Oid)
+    {
+        $data = TravelFormula1::whereNull('GCRecord');
+        $data = $this->crudController->detail('trvformula1', $data, $Oid);
+        return $data;
+    }
+
+    public function show(TravelFormula1 $data)
+    {
+        return response()->json($this->showSub($data->Oid), Response::HTTP_OK);
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+
+        try {
+            if (!$Oid) $data = new TravelFormula1();
+            else $data = TravelFormula1::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $data = $this->crudController->save('trvformula1', $data, $request);
+                $data->save();
+
+
+                if (isset($request->Details)) {
+                    $this->crudController->deleteDetail($data->Details, $request->Details);
+                    foreach ($request->Details as $row) {
+                        if (isset($row->Oid)) $detail = TravelFormula1Detail::findOrFail($row->Oid);
+                        else $detail = new TravelFormula1Detail();
+                        $detail = $this->crudController->save('trvformula1detail', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+                if (!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('TravelFormula1'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            $data->Action = $this->roleService->generateActionMaster($role);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(TravelFormula1 $data)
+    {
+        return $this->crudController->delete($this->module, $data);
+    }
+
+    public function detailfields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'text', 'n'=>'TravelFormula1',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'int', 'n'=>'RangeUntil',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'double', 'n'=>'AmountCompany',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'double', 'n'=>'AmountFee1',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'double', 'n'=>'AmountFee2',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'double', 'n'=>'AmountFee3',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'double', 'n'=>'AmountFee4',];
+        $fields[] = ['w'=> 0, 'h'=>0, 't'=>'double', 'n'=>'AmountFee5',];
+        return $fields;
+    }
+    public function detailconfig(Request $request) {
+        $fields = serverSideFields($this->detailfields(),true);
+        foreach ($fields as &$row) { //combosource
+        }
+        $result = [];
+        $result[] = [
+            "fieldToSave" => "Details",
+            "addButton" => true,
+            "showPopup" => false,
+            "data" => $fields
+        ];
+        return $result;
+    }
+}

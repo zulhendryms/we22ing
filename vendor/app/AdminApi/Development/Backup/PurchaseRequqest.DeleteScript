@@ -1,0 +1,82 @@
+SELECT * FROM trdpurchaserequest WHERE Code LIKE '%test%' OR Code = '%vivi%';
+
+DELETE FROM notificationuser WHERE Notification IN (SELECT Oid FROM notification n WHERE PurchaseRequest IN ('2924519e-8f74-4701-9713-d40d626a6bd6',
+'55e764b8-8de1-4663-9384-e794ddd1022b',
+'669953d1-7504-4880-aa7d-9faf1e2b3cf3',
+'7329b4dc-8a15-4bc2-9d99-d86af62ae29c',
+'78859dff-134a-4a2e-9412-7ede9db11f6a',
+'8a00f3b3-f523-4453-ba17-bc6eb3d77ba9',
+'8ba58cbc-3c5e-4776-ae12-e8f525ea8348',
+'d338defd-2db5-4a7b-a11f-0aa4744b3e1e',
+'e000ffe6-0201-49c6-8696-1b8b0b184d45',
+'e96517b5-850b-4cb9-837e-f3043c9903ec',
+'f84c1def-b512-498a-8a48-f62273360cdf',
+'f9a22d6e-5399-4a7c-805b-31e09df0979e'));
+DELETE FROM notification WHERE PurchaseRequest IN ('2924519e-8f74-4701-9713-d40d626a6bd6',
+'55e764b8-8de1-4663-9384-e794ddd1022b',
+'669953d1-7504-4880-aa7d-9faf1e2b3cf3',
+'7329b4dc-8a15-4bc2-9d99-d86af62ae29c',
+'78859dff-134a-4a2e-9412-7ede9db11f6a',
+'8a00f3b3-f523-4453-ba17-bc6eb3d77ba9',
+'8ba58cbc-3c5e-4776-ae12-e8f525ea8348',
+'d338defd-2db5-4a7b-a11f-0aa4744b3e1e',
+'e000ffe6-0201-49c6-8696-1b8b0b184d45',
+'e96517b5-850b-4cb9-837e-f3043c9903ec',
+'f84c1def-b512-498a-8a48-f62273360cdf',
+'f9a22d6e-5399-4a7c-805b-31e09df0979e');
+DELETE FROM trdpurchaserequestlog WHERE PurchaseRequest IN ('2924519e-8f74-4701-9713-d40d626a6bd6',
+'55e764b8-8de1-4663-9384-e794ddd1022b',
+'669953d1-7504-4880-aa7d-9faf1e2b3cf3',
+'7329b4dc-8a15-4bc2-9d99-d86af62ae29c',
+'78859dff-134a-4a2e-9412-7ede9db11f6a',
+'8a00f3b3-f523-4453-ba17-bc6eb3d77ba9',
+'8ba58cbc-3c5e-4776-ae12-e8f525ea8348',
+'d338defd-2db5-4a7b-a11f-0aa4744b3e1e',
+'e000ffe6-0201-49c6-8696-1b8b0b184d45',
+'e96517b5-850b-4cb9-837e-f3043c9903ec',
+'f84c1def-b512-498a-8a48-f62273360cdf',
+'f9a22d6e-5399-4a7c-805b-31e09df0979e');
+DELETE FROM trdpurchaserequestdetail WHERE PurchaseRequest IN ('2924519e-8f74-4701-9713-d40d626a6bd6',
+'55e764b8-8de1-4663-9384-e794ddd1022b',
+'669953d1-7504-4880-aa7d-9faf1e2b3cf3',
+'7329b4dc-8a15-4bc2-9d99-d86af62ae29c',
+'78859dff-134a-4a2e-9412-7ede9db11f6a',
+'8a00f3b3-f523-4453-ba17-bc6eb3d77ba9',
+'8ba58cbc-3c5e-4776-ae12-e8f525ea8348',
+'d338defd-2db5-4a7b-a11f-0aa4744b3e1e',
+'e000ffe6-0201-49c6-8696-1b8b0b184d45',
+'e96517b5-850b-4cb9-837e-f3043c9903ec',
+'f84c1def-b512-498a-8a48-f62273360cdf',
+'f9a22d6e-5399-4a7c-805b-31e09df0979e');
+
+DELETE FROM trdpurchaserequestamount WHERE PurchaseRequest IN ('2924519e-8f74-4701-9713-d40d626a6bd6',
+'55e764b8-8de1-4663-9384-e794ddd1022b',
+'669953d1-7504-4880-aa7d-9faf1e2b3cf3',
+'7329b4dc-8a15-4bc2-9d99-d86af62ae29c',
+'78859dff-134a-4a2e-9412-7ede9db11f6a',
+'8a00f3b3-f523-4453-ba17-bc6eb3d77ba9',
+'8ba58cbc-3c5e-4776-ae12-e8f525ea8348',
+'d338defd-2db5-4a7b-a11f-0aa4744b3e1e',
+'e000ffe6-0201-49c6-8696-1b8b0b184d45',
+'e96517b5-850b-4cb9-837e-f3043c9903ec',
+'f84c1def-b512-498a-8a48-f62273360cdf',
+'f9a22d6e-5399-4a7c-805b-31e09df0979e');
+DELETE FROM trdpurchaserequest WHERE Oid IN ('2924519e-8f74-4701-9713-d40d626a6bd6',
+'55e764b8-8de1-4663-9384-e794ddd1022b',
+'669953d1-7504-4880-aa7d-9faf1e2b3cf3',
+'7329b4dc-8a15-4bc2-9d99-d86af62ae29c',
+'78859dff-134a-4a2e-9412-7ede9db11f6a',
+'8a00f3b3-f523-4453-ba17-bc6eb3d77ba9',
+'8ba58cbc-3c5e-4776-ae12-e8f525ea8348',
+'d338defd-2db5-4a7b-a11f-0aa4744b3e1e',
+'e000ffe6-0201-49c6-8696-1b8b0b184d45',
+'e96517b5-850b-4cb9-837e-f3043c9903ec',
+'f84c1def-b512-498a-8a48-f62273360cdf',
+'f9a22d6e-5399-4a7c-805b-31e09df0979e');
+
+
+DELETE FROM trdpurchaseorderlog;
+DELETE FROM trdpurchasedeliverydetail;
+DELETE FROM trdpurchaseorderdetail;
+DELETE FROM trdpurchasedelivery;
+DELETE FROM trdpurchaseorder;

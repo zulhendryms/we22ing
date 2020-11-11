@@ -1,0 +1,347 @@
+<?php
+
+namespace App\AdminApi\Accounting\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Accounting\Entities\CashBank;
+use App\Core\Accounting\Entities\CashBankDetail;
+use App\Core\Accounting\Entities\Journal;
+use App\Core\Master\Entities\Currency;
+use App\Core\Accounting\Resources\CashBankCollection;
+use App\Core\Accounting\Resources\CashBankResource;
+use Illuminate\Support\Facades\DB;
+use App\Core\Accounting\Services\CashBankService;
+use App\Core\Security\Services\RoleModuleService;
+use Illuminate\Support\Facades\Auth;
+use Carbon\Carbon;
+
+class CashBankController extends Controller
+{
+    protected $cashBankService;
+    protected $roleService;
+    
+    public function __construct(
+        CashBankService $cashBankService,
+        RoleModuleService $roleService  
+        )
+    {
+        $this->cashBankService = $cashBankService;
+        $this->roleService = $roleService;
+    }
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Date');
+        $fields[] = serverSideConfigField('Account');
+        $fields[] = ['w'=> 200, 'n'=>'Type',];
+        $fields[] = serverSideConfigField('Currency');
+        $fields[] = ['w'=> 200, 'n'=>'TotalAmount'];
+        $fields[] = ['w'=> 200, 'n'=>'CodeReff',];
+        $fields[] = serverSideConfigField('Status');
+        return $fields;
+    }
+
+    public function config(Request $request) {
+        return serverSideFields($this->fields());
+    }
+    public function list(Request $request) {
+        $fields = $this->fields();
+        $data = DB::table('acccashbank as data')
+            ->leftJoin('mstcurrency AS c', 'c.Oid', '=', 'data.Currency')
+            ->leftJoin('accaccount AS a', 'a.Oid', '=', 'data.Account')
+            ->leftJoin('mstbusinesspartner AS bp', 'bp.Oid', '=', 'data.BusinessPartner')
+            ->leftJoin('sysstatus AS s', 's.Oid', '=', 'data.Status');
+        $data = serverSideQuery($data, $fields, $request,'Date');
+        $role = $this->roleService->list('CashBank');
+        $action = $this->roleService->action('CashBank');
+        foreach($data as $row) $row->Role = $this->roleService->generateRole($row, $role, $action);
+        return serverSideReturn($data, $fields);
+    }
+
+    public function index(Request $request, $Oid = null)
+    {
+        // $accountCashBank = DB::table('acccashbank')
+        //     ->select('acccashbank.Oid', 'acccashbank.Code',  DB::raw("DATE_FORMAT(acccashbank.Date, '%Y-%m-%d') AS Date"), 'acccashbank.TotalAmount', 'acccashbank.Account', DB::raw("CONCAT(accaccount.Name,' - ', accaccount.Code) AS AccountName"),
+        //     'acccashbank.Status', 'sysstatus.ModAccount AS StatusName', 'acccashbank.Currency', 'sysstatus.Code AS CurrencyCode', 'acccashbank.BusinessPartner', 'mstbusinesspartner.Name AS BusinessPartnerName',
+        //     DB::raw("CASE
+        //             WHEN acccashbank.Type=0 THEN 'Income'
+        //             WHEN acccashbank.Type=1 THEN 'Expense'
+        //             WHEN acccashbank.Type=2 THEN 'Receipt'
+        //             WHEN acccashbank.Type=3 THEN 'Payment'
+        //             WHEN acccashbank.Type=4 THEN 'Transfer'
+        //         END AS Type")
+        //     )
+        //     ->leftJoin('accaccount', 'acccashbank.Account', '=', 'accaccount.Oid')
+        //     ->leftJoin('sysstatus', 'acccashbank.Status', '=', 'sysstatus.Oid')
+        //     ->leftJoin('mstcurrency', 'acccashbank.Currency', '=', 'mstcurrency.Oid')
+        //     ->leftJoin('mstbusinesspartner', 'acccashbank.BusinessPartner', '=', 'mstbusinesspartner.Oid');
+
+        // $accountJournal = DB::table('accjournal')
+        //     ->select('accgeneraljournal.Oid', 'accgeneraljournal.Code', DB::raw("DATE_FORMAT(accgeneraljournal.Date, '%Y-%m-%d') AS Date"), 'accgeneraljournal.TotalAmount', 'accjournal.Account', DB::raw("CONCAT(accaccount.Name,' - ', accaccount.Code) AS AccountName"),
+        //     'accgeneraljournal.Status', 'sysstatus.ModAccount AS StatusName', 'accgeneraljournal.Currency', 'mstcurrency.Code AS CurrencyCode', 'accjournal.BusinessPartner', 'mstbusinesspartner.Name AS BusinessPartnerName', DB::raw("'GL' AS Type"))
+        //     ->leftJoin('accgeneraljournal', 'accjournal.GeneralJournal', '=', 'accgeneraljournal.Oid')
+        //     ->leftJoin('accaccount', 'accjournal.Account', '=', 'accaccount.Oid')
+        //     ->leftJoin('sysstatus', 'accjournal.Status', '=', 'sysstatus.Oid')
+        //     ->leftJoin('mstcurrency', 'accjournal.Currency', '=', 'mstcurrency.Oid')
+        //     ->leftJoin('mstbusinesspartner', 'accjournal.BusinessPartner', '=', 'mstbusinesspartner.Oid');
+
+        // $data = $accountCashBank
+        //     ->unionAll($accountJournal)
+        //     ->get();
+        try {            
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = CashBank::whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);
+
+            // [zfx] TODO: reverse if else
+            if ($request->has('date') && $request->has('account')) {
+                $data = $data
+                    ->where('Date','>=', Carbon::parse($request->date)->startOfMonth()->toDateString())
+                    ->where('Date','<', Carbon::parse($request->date)->startOfMonth()->addMonths(1)->toDateString())
+                    ->where('Account',$request->account);
+            }
+            else {
+                return (new CashBankCollection(collect([])))->type($type);
+            }
+
+            if ($type == 'list') $data->with(['CurrencyObj','BusinessPartnerObj','AccountObj','StatusObj']);
+            $data = $data->get();
+            
+            $result = [];
+            $role = $this->roleService->list('CashBank');
+            $action = $this->roleService->action('CashBank');
+            foreach ($data as $row) {
+                $result[] = [
+                    'Oid' => $row->Oid,
+                    'Code' => $row->Code,
+                    'Date' => Carbon::parse($row->Date)->format('Y-m-d'),
+                    'TypeName' => $row->TypeName,
+                    'TotalAmount' => number_format($row->TotalAmount,$row->CurrencyObj->Decimal),
+                    'CurrencyName' => $row->CurrencyObj ? $row->CurrencyObj->Code : null,
+                    'BusinessPartnerName' => $row->BusinessPartnerObj ? $row->BusinessPartnerObj->Name.' - '.$row->BusinessPartnerObj->Code : null,
+                    'StatusName' => $row->StatusObj ? $row->StatusObj->Name : null,
+                    'Role' => $this->GenerateRole($row, $role, $action)
+                ];
+            }
+            return $result;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function show(CashBank $data)
+    {
+        try{
+            $data = CashBank::with(['Details'])->with([
+                'BusinessPartnerObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'AccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+                'Details.AccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+                'TransferAccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+                'AdditionalAccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},    
+                'DiscountAccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+                'PrepaidAccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+            ])->findOrFail($data->Oid);
+            $data->Role = $this->generateRole($data);
+            return (new CashBankResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function post(CashBank $data)
+    {
+        try{
+            $this->cashBankService->post($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    public function unpost(CashBank $data)
+    {
+        try{
+            $this->cashBankService->unpost($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    public function cancelled(CashBank $data)
+    {
+        try{
+            $this->cashBankService->cancelled($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function destroy(CashBank $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->Journals()->delete();
+                $data->Details()->delete();
+                $data->delete();
+            });
+            
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    
+    public function journal(CashBank $data)
+    {
+        try {            
+            return Journal::where('CashBank', $data->Oid);
+            // return $data->Journals();  
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }      
+    }
+
+    private function generateRole(CashBank $data, $role = null, $action = null) {
+        if (!$role) $role = $this->roleService->list('CashBank');
+        if (!$action) $action = $this->roleService->action('CashBank');
+
+        return [
+            'IsRead' => $role->IsRead,
+            'IsAdd' => $role->IsAdd,
+            'IsEdit' => $this->roleService->isAllowDelete($data->StatusObj, $role->IsEdit),
+            'IsDelete' => 0, //$this->roleService->isAllowDelete($row->StatusObj, $role->IsDelete),
+            'Cancel' => $this->roleService->isAllowCancel($data->StatusObj, $action->Cancel),
+            'Entry' => $this->roleService->isAllowEntry($data->StatusObj, $action->Entry),
+            'Post' => $this->roleService->isAllowPost($data->StatusObj, $action->Posted),
+            'ViewJournal' => $this->roleService->isPosted($data->StatusObj, 1),
+        ];
+    }
+
+    public function invoiceSearch(Request $request)
+    {
+        if ($request->input('type') == 'payment') {
+            $query = "SELECT  pc.Oid, 
+                CONCAT(pc.Code, '  (', DATE_FORMAT(pc.Date, '%Y-%m-%d'),'):  ', c.Code,' ',(IFNULL(pc.TotalAmount,0) - IFNULL(pc.PrepaidAmount,0) - IFNULL(pc.PaidAmount,0))) AS Name, 
+                c.Oid AS Currency, (IFNULL(pc.TotalAmount,0) - IFNULL(pc.PrepaidAmount,0) - IFNULL(pc.PaidAmount,0)) AS AmountInvoice, pc.Rate, pc.Account
+                FROM trdpurchaseinvoice pc
+                LEFT OUTER JOIN mstbusinesspartner bp ON pc.BusinessPartner = bp.Oid
+                LEFT OUTER JOIN mstcurrency c ON pc.Currency = c.Oid
+                LEFT OUTER JOIN sysstatus s ON pc.Status = s.Oid
+                WHERE (IFNULL(pc.TotalAmount,0) - IFNULL(pc.PrepaidAmount,0) - IFNULL(pc.PaidAmount,0)) > 0
+                AND pc.GCRecord IS NULL
+                AND pc.Oid NOT IN ({$request->input('exception')})
+                AND pc.BusinessPartner = '{$request->input('businesspartner')}'
+                AND pc.Date <= '{$request->input('date')}'
+                AND s.Code = 'posted'";
+            $data = DB::select($query);
+            foreach($data as $row) {
+                $cur = Currency::findOrFail($row->Currency);
+                $row->AmountCashBank = $cur->convertRate($request->input('currency'),$row->AmountInvoice);
+            }
+            return response()->json(
+                $data,
+                Response::HTTP_OK
+            );
+        }
+    }
+
+    public function invoiceAdd(Request $request)
+    {
+        try {
+            $details=[];
+            DB::transaction(function () use ($request, &$details) {    
+                $cashBank = CashBank::findOrFail($request->input('oid'));
+                $type = $request->input('type');
+                $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+                $string="";
+                foreach ($request as $row) {
+                    $string = ($string ? $string."," : null) . "'".$row."'";
+                }
+                if ($type=='payment') {
+                    $query = "SELECT po.*,
+                        (IFNULL(po.TotalAmount,0) - IFNULL(po.PrepaidAmount,0) - IFNULL(po.PaidAmount,0)) AS OutstandingAmount
+                        FROM trdpurchaseinvoice po
+                        LEFT OUTER JOIN sysstatus s ON po.Status = s.Oid
+                        WHERE (IFNULL(po.TotalAmount,0) - IFNULL(po.PrepaidAmount,0) - IFNULL(po.PaidAmount,0)) > 0
+                        AND po.GCRecord IS NULL AND po.Oid IN (".$string.")
+                        ";
+                    $data = DB::select($query);
+                    foreach($data as $row) {
+                        $cur = $cashBank->AccountObj->CurrencyObj;
+                        $rate = $cur->getRate($cashBank->Date)->MidRate;
+                        if ($cur->Oid == $row->Currency) {
+                            $amountCashBank = $row->OutstandingAmount;
+                            $amountCashBankBase = $cur->toBaseAmount($row->OutstandingAmount, $rate);
+                        } else{
+                            $amountCashBank = $cur->convertRate($row->Currency, $row->OutstandingAmount, $cashBank->Date);
+                            $amountCashBankBase = $cur->toBaseAmount($amountCashBank, $rate);
+                        } 
+
+                        $detail = new CashBankDetail();
+                        $detail->CashBank = $cashBank->Oid;
+                        $detail->Company = $cashBank->Company;
+                        $detail->PurchaseInvoice = $row->Oid;
+                        $detail->Currency = $row->Currency;
+                        $detail->Rate = $rate;
+                        $detail->Account = $row->Account;
+                        $detail->Description = $row->Code;
+                        $detail->AmountInvoice = $row->OutstandingAmount;
+                        $detail->AmountInvoiceBase = $cur->toBaseAmount($detail->AmountInvoice, $rate);
+                        $detail->AmountCashBank = $amountCashBank;
+                        $detail->AmountCashBankBase = $amountCashBankBase;
+                        $detail->save();
+                        $details[] = $detail;                    
+                    }
+                    $query = "UPDATE trdpurchaseinvoice pinv
+                        LEFT OUTER JOIN (
+                            SELECT cbd.PurchaseInvoice, SUM(IFNULL(cbd.AmountInvoice,0)) AS PaidAmount 
+                            FROM acccashbankdetail cbd 
+                            WHERE cbd.PurchaseInvoice IN (".$string.") 
+                            AND cbd.GCRecord IS NULL GROUP BY cbd.PurchaseInvoice
+                        ) cbd ON cbd.PurchaseInvoice = pinv.Oid
+                        SET pinv.PaidAmount = IFNULL(cbd.PaidAmount,0)
+                        WHERE pinv.Oid IN (".$string.")";
+                    if ($string != '') DB::Update($query);
+
+                }
+                
+            });
+        
+            return response()->json(
+                $details, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}
+            

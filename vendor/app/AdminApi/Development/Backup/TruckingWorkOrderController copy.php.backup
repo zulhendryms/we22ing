@@ -1,0 +1,318 @@
+<?php
+
+namespace App\AdminApi\Trucking\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Trucking\Entities\TruckingWorkOrder;
+use App\Core\Trucking\Entities\TruckingWorkOrderLog;
+use App\Core\Trucking\Entities\TruckingWorkOrderImage;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Base\Services\HttpService;
+
+class TruckingWorkOrderController extends Controller
+{
+    private $httpService;
+    protected $roleService;
+    public function __construct(RoleModuleService $roleService, HttpService $httpService)
+    {
+        $this->roleService = $roleService;
+        $this->httpService = $httpService;
+        $this->httpService->baseUrl('http://api1.ezbooking.co:888')->json();
+    }
+
+    public function config(Request $request)
+    {
+        $fields = $this->httpService->get('/portal/api/development/table/vuelist?code=TruckingWorkOrder');
+        foreach ($fields as &$row) { //combosource
+            if ($row->headerName == 'ContainerTypeAndSize') $row->source = comboselect('trccontainertype');
+            elseif ($row->headerName == 'FromBusinessPartner') $row->source = comboselect('mstbusinesspartner');
+            elseif ($row->headerName == 'FromPort') $row->source = comboselect('trcport');
+            elseif ($row->headerName == 'FromAddress') $row->source = comboselect('trcaddress');
+            elseif ($row->headerName == 'ToBusinessPartner') $row->source = comboselect('mstbusinesspartner');
+            elseif ($row->headerName == 'ToPort') $row->source = comboselect('trcport');
+            elseif ($row->headerName == 'ToAddress') $row->source = comboselect('trcaddress');
+            elseif ($row->headerName == 'ToBusinessPartner1') $row->source = comboselect('mstbusinesspartner');
+            elseif ($row->headerName == 'ToPort1') $row->source = comboselect('trcport');
+            elseif ($row->headerName == 'ToAddress1') $row->source = comboselect('trcaddress');
+            elseif ($row->headerName == 'ToBusinessPartner2') $row->source = comboselect('mstbusinesspartner');
+            elseif ($row->headerName == 'ToPort2') $row->source = comboselect('trcaddress');
+            elseif ($row->headerName == 'ToAddress2') $row->source = comboselect('trcaddress');
+            elseif ($row->headerName == 'ToBusinessPartner3') $row->source = comboselect('mstbusinesspartner');
+            elseif ($row->headerName == 'ToPort3') $row->source = comboselect('trcport');
+            elseif ($row->headerName == 'ToAddress3') $row->source = comboselect('trcaddress');
+            elseif ($row->headerName == 'UserDriver') $row->source = comboselect('user');
+            elseif ($row->headerName == 'TruckingDriverSession') $row->source = comboselect('trcdriversession');
+        };
+        return $fields;
+    }
+
+    public function list(Request $request)
+    {
+        $fields = $this->httpService->get('/portal/api/development/table/vuelist?code=TruckingWorkOrder');
+        $data = DB::table('trcworkorder as data') //jointable
+
+            ->leftJoin('trccontainertype AS ContainerTypeAndSize', 'ContainerTypeAndSize.Oid', '=', 'data.ContainerTypeAndSize')
+            ->leftJoin('mstbusinesspartner AS FromBusinessPartner', 'FromBusinessPartner.Oid', '=', 'data.FromBusinessPartner')
+            ->leftJoin('trcport AS FromPort', 'FromPort.Oid', '=', 'data.FromPort')
+            ->leftJoin('trcaddress AS FromAddress', 'FromAddress.Oid', '=', 'data.FromAddress')
+            ->leftJoin('mstbusinesspartner AS ToBusinessPartner', 'ToBusinessPartner.Oid', '=', 'data.ToBusinessPartner')
+            ->leftJoin('trcport AS ToPort', 'ToPort.Oid', '=', 'data.ToPort')
+            ->leftJoin('trcaddress AS ToAddress', 'ToAddress.Oid', '=', 'data.ToAddress')
+            ->leftJoin('mstbusinesspartner AS ToBusinessPartner1', 'ToBusinessPartner1.Oid', '=', 'data.ToBusinessPartner1')
+            ->leftJoin('trcport AS ToPort1', 'ToPort1.Oid', '=', 'data.ToPort1')
+            ->leftJoin('trcaddress AS ToAddress1', 'ToAddress1.Oid', '=', 'data.ToAddress1')
+            ->leftJoin('mstbusinesspartner AS ToBusinessPartner2', 'ToBusinessPartner2.Oid', '=', 'data.ToBusinessPartner2')
+            ->leftJoin('trcaddress AS ToPort2', 'ToPort2.Oid', '=', 'data.ToPort2')
+            ->leftJoin('trcaddress AS ToAddress2', 'ToAddress2.Oid', '=', 'data.ToAddress2')
+            ->leftJoin('mstbusinesspartner AS ToBusinessPartner3', 'ToBusinessPartner3.Oid', '=', 'data.ToBusinessPartner3')
+            ->leftJoin('trcport AS ToPort3', 'ToPort3.Oid', '=', 'data.ToPort3')
+            ->leftJoin('trcaddress AS ToAddress3', 'ToAddress3.Oid', '=', 'data.ToAddress3')
+            ->leftJoin('user AS UserDriver', 'UserDriver.Oid', '=', 'data.UserDriver')
+            ->leftJoin('trcdriversession AS TruckingDriverSession', 'TruckingDriverSession.Oid', '=', 'data.TruckingDriverSession');
+        $data = serverSideQueryJSon($data, $fields, $request, 'Oid');
+        $role = $this->roleService->list('TruckingWorkOrder'); //rolepermission
+        foreach ($data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+        return serverSideReturn($data, $fields);
+    }
+
+
+    public function index(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = TruckingWorkOrder::whereNull('GCRecord');
+
+            $data = $data->orderBy('Oid')->get();
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    private function showSub($Oid)
+    {
+        $data = TruckingWorkOrder::with('Logs', 'Images')->findOrFail($Oid);
+
+        $data->ContainerTypeAndSizeName = $data->ContainerTypeAndSizeObj ? $data->ContainerTypeAndSizeObj->Name : null;
+        $data->FromBusinessPartnerName = $data->FromBusinessPartnerObj ? $data->FromBusinessPartnerObj->Name : null;
+        $data->FromPortName = $data->FromPortObj ? $data->FromPortObj->Name : null;
+        $data->FromAddressName = $data->FromAddressObj ? $data->FromAddressObj->Name : null;
+        $data->ToBusinessPartnerName = $data->ToBusinessPartnerObj ? $data->ToBusinessPartnerObj->Name : null;
+        $data->ToPortName = $data->ToPortObj ? $data->ToPortObj->Name : null;
+        $data->ToAddressName = $data->ToAddressObj ? $data->ToAddressObj->Name : null;
+        $data->ToBusinessPartner1Name = $data->ToBusinessPartner1Obj ? $data->ToBusinessPartner1Obj->Name : null;
+        $data->ToPort1Name = $data->ToPort1Obj ? $data->ToPort1Obj->Name : null;
+        $data->ToAddress1Name = $data->ToAddress1Obj ? $data->ToAddress1Obj->Name : null;
+        $data->ToBusinessPartner2Name = $data->ToBusinessPartner2Obj ? $data->ToBusinessPartner2Obj->Name : null;
+        $data->ToPort2Name = $data->ToPort2Obj ? $data->ToPort2Obj->Name : null;
+        $data->ToAddress2Name = $data->ToAddress2Obj ? $data->ToAddress2Obj->Name : null;
+        $data->ToBusinessPartner3Name = $data->ToBusinessPartner3Obj ? $data->ToBusinessPartner3Obj->Name : null;
+        $data->ToPort3Name = $data->ToPort3Obj ? $data->ToPort3Obj->Name : null;
+        $data->ToAddress3Name = $data->ToAddress3Obj ? $data->ToAddress3Obj->Name : null;
+        $data->UserDriverName = $data->UserDriverObj ? $data->UserDriverObj->Name : null;
+        $data->TruckingDriverSessionName = $data->TruckingDriverSessionObj ? $data->TruckingDriverSessionObj->Oid : null;
+
+
+        foreach ($data->Logs as $row) {
+
+            $row->UserName = $row->UserObj ? $row->UserObj->Name : null;
+        }
+
+        return $data;
+    }
+
+    public function show(TruckingWorkOrder $data)
+    {
+        try {
+            return $this->showSub($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function listController(Request $request) {
+        $query = "SELECT 
+                wo.Oid, wo.Code, bp.Code Customer, ContainerNumber, 
+                fa.Name FromAddress, ta.Name ToAddress, TrailerNumber,
+                wolog.CreatedAt AS DateStart, wo.TruckingStatus Status
+            FROM trcworkorder wo 
+                LEFT OUTER JOIN (
+                    SELECT wolog.TruckingWorkorder, MAX(wolog.CreatedAt) CreatedAt
+                    FROM trcworkorderlog wolog 
+                    WHERE wolog.TruckingStatus = 'Started'
+                    GROUP BY wolog.TruckingStatus, wolog.TruckingWorkorder
+                ) wolog ON wolog.TruckingWorkorder = wo.Oid
+                LEFT OUTER JOIN mstbusinesspartner bp ON bp.Oid = wo.FromBusinessPartner
+                LEFT OUTER JOIN trcaddress fa ON wo.FromAddress = fa.Oid
+                LEFT OUTER JOIN trcaddress ta ON wo.FromAddress = ta.Oid
+            WHERE wo.GCRecord IS NULL AND TruckingStatus != 'Cancelled' ";
+        if ($request->input('status') == 'Unassigned') $query = 
+            $query."AND TruckingStatus IN ('Entry')";
+        if ($request->input('status') == 'Assigned') $query = 
+            $query."AND TruckingStatus IN ('Assigned','Started','Ended')";
+        return DB::select($query);
+    }
+
+    public function driverAssign(Request $request) {
+        $data = TruckingWorkOrder::findOrFail($request->input('oid'));
+        $data->UserDriver = $request->input('driver');
+        $data->save();
+        $this->createLog($data, 'Driver assigned to '.$data->UserDriverObj->Name);
+        return $data;
+    }
+
+    private function createLog(TruckingWorkOrder $data, $description) {
+        $user = Auth::user();  
+        $detail = new TruckingWorkOrderLog();
+        $detail->TruckingWorkOrder = $data->Oid;
+        $detail->User = $user->Oid;
+        $detail->TruckingStatus = $data->TruckingStatus;
+        $detail->Description = $description;
+        $detail->Longitude = null;
+        $detail->Latitude = null;
+        $detail->save();
+        return $detail;
+    }
+
+    public function statusStarted(Request $request)
+    {
+        $user = Auth::user();
+        $oid = $request->input('oid');
+        $data = TruckingWorkOrder::findOrFail($oid);
+        $data->TruckingStatus = 'Started';
+        // if (!$data->SealNumber) throw new \Exception("SealNumber is empty");
+        // if (!$data->TrailerNumber) throw new \Exception("TrailerNumber is empty");
+        // if (!$data->ContainerNumber) throw new \Exception("ContainerNumber is empty");
+        $data->save();
+        $this->createLog($data, 'Driver start to work (Backend)');
+
+        return response()->json(
+            $data, Response::HTTP_CREATED
+        );
+    }
+
+    public function statusEnded(Request $request)
+    {
+        $user = Auth::user();
+        $oid = $request->input('oid');
+        $data = TruckingWorkOrder::findOrFail($oid);
+        $data->TruckingStatus = 'Ended';
+        if (isset($request->ArrivedContact)) $data->ArrivedContact = $request->ArrivedContact;
+        if (isset($request->ArrivedRemark)) $data->ArrivedRemark = $request->ArrivedRemark;
+        $data->save();        
+        $this->createLog($data, 'Driver finish job (Backend)');
+        
+        $data->UserDriverObj->TruckingWorkOrder = $oid;
+        $data->UserDriverObj->save();
+        // $data->TruckingTrailerObj->TruckingWorkOrder = $oid;
+        // $data->TruckingTrailerObj->save();
+        // $data->TruckingPrimeMoverObj->TruckingWorkOrder = $oid;
+        // $data->TruckingPrimeMoverObj->save();
+
+        return response()->json(
+            $data, Response::HTTP_CREATED
+        );
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+
+
+        try {
+            if (!$Oid) $data = new TruckingWorkOrder();
+            else $data = TruckingWorkOrder::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $disabled = array_merge(disabledFieldsForEdit(), ['ContainerTypeAndSizeName', 'FromBusinessPartnerName', 'FromPortName', 'FromAddressName', 'ToBusinessPartnerName', 'ToPortName',
+                 'ToAddressName', 'ToBusinessPartner1Name', 'ToPort1Name', 'ToAddress1Name', 'ToBusinessPartner2Name', 'ToPort2Name', 'ToAddress2Name', 'ToBusinessPartner3Name', 'ToPort3Name',
+                  'ToAddress3Name', 'UserDriverName', 'TruckingDriverSessionName', 'Logs', 'Images']);;
+                if (!$data->Oid) {
+                    if (!isset($request->Date)) $request->Date = now();
+                    if (!isset($request->ContainerNumber)) $request->ContainerNumberIsDriverFill = true;
+                    if (!isset($request->SealNumber)) $request->SealNumberIsDriverFill = true;
+                    if (!isset($request->TrailerNumber)) $request->TrailerNumberIsDriverFill = true;
+                    $request->TruckingStatus = 'Entry';
+                }
+                $data = serverSideSave($data, $request, $disabled);
+                $data->save();
+
+
+
+                if (isset($request->Logs)) {
+                    $disabled = array_merge(disabledFieldsForEdit(), ['UserName']);;
+
+                    serverSideDeleteDetail($data->Logs, $request->Logs);
+                    foreach ($request->Logs as $row) {
+                        if (isset($row->Oid)) $detail = TruckingWorkOrderLog::findOrFail($row->Oid);
+                        else $detail = new TruckingWorkOrderLog();
+                        $detail->TruckingWorkOrder = $data->Oid;
+                        $detail = serverSideSave($detail, $row, $disabled);
+                        $detail->save();
+                    }
+                    $data->load('Logs');
+                    $data->fresh();
+                }
+
+                if (isset($request->Images)) {
+                    $disabled = disabledFieldsForEdit();
+
+                    serverSideDeleteDetail($data->Images, $request->Images);
+                    foreach ($request->Images as $row) {
+                        if (isset($row->Oid)) $detail = TruckingWorkOrderImage::findOrFail($row->Oid);
+                        else $detail = new TruckingWorkOrderImage();
+                        $detail->TruckingWorkOrder = $data->Oid;
+                        $detail = serverSideSave($detail, $row, $disabled);
+                        $detail->save();
+                    }
+                    $data->load('Images');
+                    $data->fresh();
+                }
+
+                if (!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('TruckingWorkOrder'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            $data->Role = $this->roleService->generateActionMaster($role);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(TruckingWorkOrder $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->delete();
+            });
+            return response()->json(
+                null,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}

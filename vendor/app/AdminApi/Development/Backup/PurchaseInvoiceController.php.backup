@@ -1,0 +1,434 @@
+<?php
+
+namespace App\AdminApi\Trading\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Trading\Entities\PurchaseInvoice;
+use App\Core\Trading\Entities\PurchaseInvoiceDetail;
+use App\Core\Accounting\Entities\Account;
+use App\Core\Internal\Entities\Status;
+use App\Core\Trading\Entities\StockTransfer;
+use App\Core\Trading\Entities\StockTransferDetail;
+use App\Core\Trading\Resources\PurchaseInvoiceResource;
+use App\Core\Trading\Resources\PurchaseInvoiceCollection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Core\Accounting\Services\PurchaseInvoiceService;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Internal\Services\ExportExcelService;
+use Maatwebsite\Excel\Excel;
+use Carbon\Carbon;
+use Validator;
+
+class PurchaseInvoiceController extends Controller
+{
+    protected $PurchaseInvoiceService;
+    protected $roleService;
+    protected $excelImportService;
+    protected $excelExportService;
+    
+    public function __construct(
+        PurchaseInvoiceService $PurchaseInvoiceService,
+        RoleModuleService $roleService,
+        Excel $excelImportService,
+        ExportExcelService $excelExportService
+        )
+    {
+        $this->purchaseInvoiceService = $PurchaseInvoiceService;
+        $this->roleService = $roleService;
+        $this->excelImportService = $excelImportService;
+        $this->excelExportService = $excelExportService;
+    }
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Date');
+        $fields[] = serverSideConfigField('BusinessPartner');
+        $fields[] = ['w'=> 200, 'n'=>'CodeReff',];
+        $fields[] = serverSideConfigField('Currency');
+        $fields[] = ['w'=> 200, 'n'=>'TotalAmount'];
+        $fields[] = serverSideConfigField('Warehouse');
+        $fields[] = serverSideConfigField('Status');
+        return $fields;
+    }
+
+    public function config(Request $request) {
+        return serverSideFields($this->fields());
+    }
+    public function list(Request $request) {
+        $fields = $this->fields();
+        $data = DB::table('trdpurchaseinvoice as data')
+            ->leftJoin('mstcurrency AS c', 'c.Oid', '=', 'data.Currency')
+            ->leftJoin('mstbusinesspartner AS bp', 'bp.Oid', '=', 'data.BusinessPartner')
+            ->leftJoin('mstwarehouse AS w', 'w.Oid', '=', 'data.Warehouse')
+            ->leftJoin('sysstatus AS s', 's.Oid', '=', 'data.Status');
+        $data = serverSideQuery($data, $fields, $request,'Date');
+        $role = $this->roleService->list('PurchaseInvoice');
+        $action = $this->roleService->action('PurchaseInvoice');
+        foreach($data as $row) $row->Role = $this->roleService->generateRole($row, $role, $action);
+        return serverSideReturn($data, $fields);
+    }
+
+    public function index(Request $request, $Oid = null)
+    {
+        try {            
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = PurchaseInvoice::whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);
+            if ($type == 'list') $data->with(['CurrencyObj','BusinessPartnerObj','AccountObj','StatusObj','WarehouseObj']);
+            if ($request->has('date')) {
+                $data = $data
+                    ->where('Date','>=', Carbon::parse($request->date)->startOfMonth()->toDateString())
+                    ->where('Date','<', Carbon::parse($request->date)->startOfMonth()->addMonths(1)->toDateString());
+            }
+            $data = $data->get();
+            
+            $result = [];
+            $role = $this->roleService->list('PurchaseInvoice');
+            $action = $this->roleService->action('PurchaseInvoice');
+            foreach ($data as $row) {
+                $result[] = [
+                    'Oid' => $row->Oid,
+                    'Code' => $row->Code,
+                    'Date' => Carbon::parse($row->Date)->format('Y-m-d'),
+                    'CodeReff' => $row->CodeReff,
+                    'TotalAmount' => number_format($row->TotalAmount,$row->CurrencyObj->Decimal),
+                    'CurrencyName' => $row->CurrencyObj ? $row->CurrencyObj->Code : null,
+                    'WarehouseName' => $row->WarehouseObj ? $row->WarehouseObj->Code : null,
+                    'BusinessPartnerName' => $row->BusinessPartnerObj ? $row->BusinessPartnerObj->Name.' - '.$row->BusinessPartnerObj->Code : null,
+                    'StatusName' => $row->StatusObj ? $row->StatusObj->Name : null,
+                    'Role' => $this->GenerateRole($row, $role, $action)
+                ];
+            }
+            return $result;
+            // return (new PurchaseInvoiceCollection($data))->type($type);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function show(PurchaseInvoice $data)
+    {
+        try {
+            $data = PurchaseInvoice::with(['Details'])->with([
+                'WarehouseObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'BusinessPartnerObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'AccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+                'Details.ItemObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'AdditionalAccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},
+                'DiscountAccountObj' => function ($query) {$query->addSelect('Oid', 'Code','Name','Currency');},                
+            ])->findOrFail($data->Oid);
+            $data->Role = $this->generateRole($data);
+            return (new PurchaseInvoiceResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function import(Request $request, PurchaseInvoice $data)
+    {
+        $validator = Validator::make($request->all(), [ 'file' => 'required|mimes:xls,xlsx' ]);
+
+        if ($validator->fails()) return response()->json($validator->messages(), Response::HTTP_UNPROCESSABLE_ENTITY);
+        if (!$request->hasFile('file')) return response()->json('No file found', Response::HTTP_UNPROCESSABLE_ENTITY);
+        
+        $file = $request->file('file');
+        $this->excelImportService->import(new PurchaseInvoiceExcelImport($data), $file);
+        return response()->json(null, Response::HTTP_CREATED);
+    }
+    
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+        $dataArray = object_to_array($request);
+        
+        $messsages = array(
+            'Code.required'=>__('_.Code').__('error.required'),
+            'Code.max'=>__('_.Code').__('error.max'),
+            'Date.required'=>__('_.Date').__('error.required'),
+            'Date.date'=>__('_.Date').__('error.date'),
+            'Rate.required'=>__('_.Rate').__('error.required'),
+            'Rate.max'=>__('_.Rate').__('error.max'),
+            'Status.required'=>__('_.Status').__('error.required'),
+            'Status.exists'=>__('_.Status').__('error.exists'),
+            'BusinessPartner.required'=>__('_.BusinessPartner').__('error.required'),
+            'BusinessPartner.exists'=>__('_.BusinessPartner').__('error.exists'),
+            'Warehouse.required'=>__('_.Warehouse').__('error.required'),
+            'Warehouse.exists'=>__('_.Warehouse').__('error.exists'),
+            'Account.required'=>__('_.Account').__('error.required'),
+            'Account.exists'=>__('_.Account').__('error.exists'),
+        );
+        $rules = array(
+            'Code' => 'required|max:255',
+            'Date' => 'required|date',
+            'Rate' => 'required|max:255',
+            'Status' => 'required|exists:sysstatus,Oid',
+            'Warehouse' => 'required|exists:mstwarehouse,Oid',
+            'BusinessPartner' => 'required|exists:mstbusinesspartner,Oid',
+            'Account' => 'required|exists:accaccount,Oid',
+        );
+
+        $validator = Validator::make($dataArray, $rules,$messsages);
+
+        if ($validator->fails()) {
+            return response()->json(
+                $validator->messages(),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        try {            
+            DB::transaction(function () use ($request, $Oid, &$data) {
+                if (!$Oid) $data = new PurchaseInvoice();
+                else $data = PurchaseInvoice::findOrFail($Oid);
+
+                $company = Auth::user()->CompanyObj;
+                $account = Account::findOrFail($request->Account);
+                $data->Company = $company->Oid;
+                $data->Code = $request->Code == '<<Auto>>' ? now()->format('ymdHis').'-'.str_random(3) : $request->Code;
+                $data->CodeReff = $request->CodeReff;
+                $data->Date = $request->Date;
+                $data->BusinessPartner = $request->BusinessPartner;
+                $data->Account = $account->Oid;
+                $data->Currency = $account->Currency ?: $company->Currency;
+                $data->AdditionalAccount = $request->AdditionalAccount;
+                $data->AdditionalAmount = $request->AdditionalAmount ?: 0;
+                $data->DiscountAccount = $request->DiscountAccount;
+                $data->DiscountAmount = $request->DiscountAmount ?: 0;
+                $data->Rate = $request->Rate ?: $account->CurrencyObj->getRate($data->Date)->MidRate;
+                $data->Warehouse = isset($request->Warehouse) ? $request->Warehouse : $company->Warehouse;
+                $data->Status = $request->Status ?: Status::entry()->first()->Oid;
+                $data->save();
+
+                if ($data->Details()->count() != 0) {
+                    foreach ($data->Details as $rowdb) {
+                        $found = false;               
+                        foreach ($request->Details as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = PurchaseInvoiceDetail::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                $totalAmount = 0;
+                if($request->Details) {
+                    $details = [];
+                    foreach ($request->Details as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = PurchaseInvoiceDetail::findOrFail($row->Oid);
+                            $detail->Item = $row->Item;
+                            $detail->Quantity = $row->Quantity;
+                            $detail->Price = $row->Price;
+                            $detail->TotalAmount = $row->Quantity * $row->Price;
+                            $detail->save();
+                        } else {
+                            $details[] = new PurchaseInvoiceDetail([
+                                'Item' => $row->Item,
+                                'Quantity' => $row->Quantity,
+                                'Price' => $row->Price,
+                                'TotalAmount' => $row->Quantity * $row->Price
+                            ]);
+                        }
+                        $totalAmount += $row->Quantity * $row->Price;
+                    }
+                    $data->Details()->saveMany($details);
+                }            
+                $data->TotalAmount = $totalAmount + $data->AdditionalAmount + $data->TotalEticketAmount - $data->DiscountAmount;
+                $data->save();
+                $data->load('Details');
+                $data->fresh();
+                
+                $data->BusinessPartnerName = $data->BusinessPartnerObj->Name;
+                $data->CurrencyName = $data->CurrencyObj->Code;
+                $data->StatusName = $data->StatusObj->Name;
+                $data->WarehouseName = $data->WarehouseObj->Code;
+                $data->Role = $this->generateRole($data);
+            });
+            // $data = new PurchaseInvoiceResource($data);
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            )->header('Location', route('AdminApi\PurchaseInvoice::show', ['data' => $data->Oid]));
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function post(PurchaseInvoice $data)
+    {
+        try {
+            $this->purchaseInvoiceService->post($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    public function unpost(PurchaseInvoice $data)
+    {
+        try {            
+            $this->purchaseInvoiceService->unpost($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    public function cancelled(PurchaseInvoice $data)
+    {
+        try {            
+            $this->purchaseInvoiceService->cancelled($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function destroy(PurchaseInvoice $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->Journals()->delete();
+                $data->Details()->delete();
+                $data->delete();
+            });
+            
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    private function generateRole($data, $role = null, $action = null) {
+        if ($data instanceof PurchaseInvoice) $status = $data->StatusObj; else $status = $data->Status;
+        if (!$role) $role = $this->roleService->list('PurchaseInvoice');
+        if (!$action) $action = $this->roleService->action('PurchaseInvoice');
+
+        return [
+            'IsRead' => $role->IsRead,
+            'IsAdd' => $role->IsAdd,
+            'IsEdit' => $this->roleService->isAllowDelete($status, $role->IsEdit),
+            'IsDelete' => 0, //$this->roleService->isAllowDelete($row->StatusObj, $role->IsDelete),
+            'Cancel' => $this->roleService->isAllowCancel($status, $action->Cancel),
+            'Entry' => $this->roleService->isAllowEntry($status, $action->Entry),
+            'Post' => $this->roleService->isAllowPost($status, $action->Posted),
+            'ViewJournal' => $this->roleService->isPosted($status, 1),
+            'ViewStock' => $this->roleService->isPosted($status, 1),
+            'Print' => $this->roleService->isPosted($status, 1),
+        ];
+    }
+
+    public function convertStockTransfer(PurchaseInvoice $data, Request $request)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+        $stock = new StockTransfer();
+        try {            
+            DB::transaction(function () use ($request,$stock, &$data) {
+                $stock->Company = Auth::user()->Company;
+                $stock->Code = now()->format('ymdHis').'-'.str_random(3);
+                $stock->Date = Carbon::now();
+                $stock->User = Auth::user()->Oid;
+                $stock->WarehouseFrom = $data->Warehouse;
+                $stock->WarehouseTo = $request->WarehouseTo;
+                $stock->Status = Status::entry()->first()->Oid;
+                $stock->save();
+
+                $details = [];
+                if ($data->Details()->count() != 0) {
+                    foreach ($data->Details as $rowdetail) {
+                        $details[] = new StockTransferDetail([
+                            'Item' => $rowdetail->Item,
+                            'ItemUnit' => Auth::user()->CompanyObj->ItemUnit,
+                            'Quantity' => $rowdetail->Quantity
+                        ]);
+                    }
+                    $stock->Details()->saveMany($details);
+                }
+
+                if(!$stock) throw new \Exception('Data is failed to be saved');
+            });
+
+            
+            return response()->json(
+                $stock, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function export(Request $request)
+    {
+        $criteria = "";
+        $query = "SELECT p.Code PurchaseInvoice, DATE_FORMAT(p.Date, '%Y-%m%-%d') Date, 
+            CONCAT(bp.Name,' - ',bp.Code) BusinessPartner, CONCAT(i.Name,' - ',i.Code) Item, 
+            IFNULL(d.Quantity,0) Qty, c.Code Currency, 
+            IFNULL(d.Price,0) Price, 
+            IFNULL(d.Quantity,0)*IFNULL(d.Price,0) TotalAmount, p.Rate
+            FROM trdpurchaseinvoice p
+            LEFT OUTER JOIN trdpurchaseinvoicedetail d ON p.Oid = d.PurchaseInvoice
+            LEFT OUTER JOIN mstbusinesspartner bp ON bp.Oid = p.BusinessPartner
+            LEFT OUTER JOIN mstitem i ON i.Oid = d.Item
+            LEFT OUTER JOIN mstcurrency c ON c.Oid = p.Currency
+            WHERE p.GCRecord IS NULL ";
+      $datefrom = Carbon::parse($request->input('datefrom'));
+      $dateto = Carbon::parse($request->input('dateto'));
+        if ($request->has('datefrom')) $criteria = $criteria." AND p.Date >= '{$datefrom->format('Y-m-d')}' ";
+        if ($request->has('dateuntil')) $criteria = $criteria." AND p.Date <= '{$dateto->format('Y-m-d')}'";
+        if ($request->has('businesspartner')) $criteria = $criteria." AND p.BusinessPartner = '{$request->datefrom}'";
+        if ($request->has('warehouse')) $criteria = $criteria." AND p.Warehouse = '{$request->warehouse}'";
+        if ($request->has('item')) $criteria = $criteria." AND d.Item = '{$request->item}'";
+        
+        $data = DB::select($query.$criteria);
+        $string = '';
+        $i = 0;
+        foreach ($data as $item) {
+            $j = 0;
+            foreach ($item  as $itemChild) {
+                $string .= $itemChild;
+                if ($i < count($data)) {
+                    $string .= ';';
+                }
+                $j ++;
+            }
+            if ($i < count($data)) {
+                $string .= '\n';
+            }
+            $i ++;
+        }
+        return response()->json(
+            $string, '200'
+        );
+//        return $this->excelExportService->export($data);
+    }
+}
+            

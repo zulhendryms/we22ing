@@ -1,0 +1,97 @@
+<?php
+
+namespace App\Core\Security\Middlewares;
+
+use Closure;
+use Illuminate\Http\Request;
+use App\Core\Master\Entities\Company;
+use Illuminate\Support\Facades\DB;
+
+class ConnectCompanyDatabase
+{
+    protected $connectionKey = 'database.connections.mysql';
+    /**
+     * Create a new middleware instance.
+     *
+     * @return void
+     */
+    public function __construct()
+    {
+        //
+    }
+
+    /**
+     * Handle an incoming request.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  \Closure  $next
+     * @return mixed
+     *
+     */
+    public function handle($request, Closure $next)
+    {       
+        // $conn = [
+        //     'database' => 'ezb_server',
+        //     'username' => 'dev',
+        //     'password' => 'U3D3jxan7FqkVYvXTYe3eAPbUoJVKDJKVd',
+        //     'host' => '134.209.111.76'
+        // ];
+        // $conn = [
+        //     'database' => env('DB_DATABASE'),
+        //     'username' => env('DB_USERNAME'),
+        //     'password' => env('DB_PASSWORD'),
+        //     'host' => env('DB_HOST')
+        // ];
+        // config([ $this->connectionKey => array_merge(config($this->connectionKey), $conn) ]);
+        // DB::reconnect('mysql');
+        // logger(config($this->connectionKey));
+        
+        $id = $this->getCompanyId($request);
+        // logger('$this->getCompanyId($request);  '.$this->getCompanyId($request));
+        if ($id) config(['app.company_id' => $id]);
+        $company = Company::select(
+            'DatabaseName',
+            'DatabaseUser',
+            'DatabasePassword',
+            'DatabaseHost'
+        )->find($id);
+        // $company = Company::find($id);
+        // logger($company);
+        
+        if (!$company) return $next($request); // Use default database
+
+        $conn = [
+            'database' => $company->DatabaseName,
+            'username' => $company->DatabaseUser,
+            'password' => $company->DatabasePassword,
+            'host' => $company->DatabaseHost
+        ];
+
+        if (!empty($conn['host']) && 
+            !empty($conn['username']) && 
+            // !empty($conn['password']) && // Password could be empty?
+            !empty($conn['database'])
+        ) {
+            config([ $this->connectionKey => array_merge(config($this->connectionKey), $conn) ]);
+        }
+
+        // dd(config($this->connectionKey));
+
+        DB::reconnect('mysql');
+
+        return $next($request);
+    }
+
+    protected function getCompanyId(Request $request)
+    {
+        if ($request->method() === 'POST' && ($request->has('Company') || $request->has('company'))) {
+            return $request->get('Company') ?? $request->get('company');
+        }
+        if ($request->bearerToken()) {
+            try {
+                $token = (new \Lcobucci\JWT\Parser())->parse($request->bearerToken());
+                return $token->getClaim('comp');
+            } catch (\Exception $exception) {}
+        }
+    }
+}

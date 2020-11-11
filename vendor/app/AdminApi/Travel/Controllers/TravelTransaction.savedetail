@@ -1,0 +1,460 @@
+
+
+    public function saveDetail(Request $request)
+    {
+        if ($request->input('form') == 'traveltransactiongit') $ttype = 'git';
+        elseif ($request->input('form') == 'traveltransactionfit') $ttype = 'fit';
+        elseif ($request->input('form') == 'traveltransactionoutbound') $ttype = 'outbound';
+        else $ttype = 'web';
+
+        $pos = $request->input('pos');
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+
+        try {
+            $data = TravelTransaction::where('Oid', $pos)->firstOrFail();        
+            if ($data) $ttype = TravelType::where('Oid', $data->TravelTransactionObj->TravelType)->first();
+            $ttype = $ttype->Code;
+            $dataPOS = PointOfSale::where('Oid', $pos)->firstOrFail();
+            DB::transaction(function () use ($request, &$data, &$dataPOS, $ttype) {
+
+                if (isset($request->Flights)) {
+                    if ($data->Flights()->count() != 0) {
+                        $flight = TravelTransactionFlight::where('TravelTransaction', $data->Oid)->get();
+                        foreach ($flight as $rowdb) {
+                            $found = false;
+                            foreach ($request->Flights as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionFlight::where('Oid', $rowdb->Oid)->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->Flights as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionFlight::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionFlight();
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName','TravelFlightNumberName','FlightTypeName']);
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->save();
+                    }
+                    $data->load('Flights');
+                    $data->fresh();
+                }
+                
+                if (isset($request->Itineraries)) {
+                    if ($data->Itineraries()->count() != 0) {
+                        $details = TravelTransactionItinerary::where('TravelTransaction', $data->Oid)->get();
+                        foreach ($details as $rowdb) {
+                            $found = false;
+                            foreach ($request->Itineraries as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionItinerary::where('Oid', $rowdb->Oid)->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->Itineraries as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionItinerary::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionItinerary();
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName']);
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->save();
+                    }
+                    $data->load('Itineraries');
+                    $data->fresh();
+                }
+                
+                if ($ttype == 'outbound' && isset($request->SalesInvoiceDetails)) {
+                    $salesInvoice = SalesInvoice::with('Details')->where('PointOfSale',$data->Oid)->first();
+                    if ($salesInvoice->Details()->count() != 0) {
+                        $details = SalesInvoiceDetail::where('SalesInvoice', $salesInvoice->Oid)->get();
+
+                        foreach ($details as $rowdb) {
+                            $found = false;
+                            foreach ($request->SalesInvoiceDetails as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = SalesInvoiceDetail::where('Oid', $rowdb->Oid)->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->SalesInvoiceDetails as $row) {
+                        if (isset($row->Oid)) $detail = SalesInvoiceDetail::findOrFail($row->Oid);
+                        else $detail = new SalesInvoiceDetail();
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName','NationalityName']);
+                        $detail->Company = $salesInvoice->Company;
+                        $detail->SalesInvoice = $salesInvoice->Oid;
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+                
+                if (isset($request->Passengers)) {
+                    if ($data->Passengers()->count() != 0) {
+                        $passenger = TravelTransactionPassenger::where('TravelTransaction', $data->Oid)->get();
+
+                        foreach ($passenger as $rowdb) {
+                            $found = false;
+                            foreach ($request->Passengers as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionPassenger::where('Oid', $rowdb->Oid)->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->Passengers as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionPassenger::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionPassenger();
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName','NationalityName']);
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (isset($request->TravelIncomeExpenses)) {
+                    if ($data->Details()->count() != 0) {
+                        $trvtransactiondetails = TravelTransactionDetail::where('TravelTransaction', $data->Oid)->whereIn('OrderType', ['Income','Expense'])->get();
+
+                        foreach ($trvtransactiondetails as $rowdb) {
+                            $found = false;
+                            foreach ($request->TravelIncomeExpenses as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionDetail::where('Oid', $rowdb->Oid)->whereIn('OrderType', ['Income','Expense'])->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->TravelIncomeExpenses as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionDetail::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionDetail();
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        $detail->Qty = 1;
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName']);                        
+
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->OrderType = $detail->OrderType ?: 'Income';                        
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (isset($request->TravelAttractionDetails)) {
+                    if ($data->Details()->count() != 0) {
+                        $trvtransactiondetails = TravelTransactionDetail::where('TravelTransaction', $data->Oid)->where('OrderType', 'Attraction')->get();
+
+                        foreach ($trvtransactiondetails as $rowdb) {
+                            $found = false;
+                            foreach ($request->TravelAttractionDetails as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionDetail::where('Oid', $rowdb->Oid)->where('OrderType', 'Attraction')->firstOrFail();
+                                $etickets = ETicket::where('PointOfSale', $data->Oid)->where('TravelTransactionDetail', $detail->Oid)->count();
+                                if($etickets > 0) throw new \Exception('Data is failed to be delete');
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->TravelAttractionDetails as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionDetail::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionDetail();
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName','BusinessPartnerName']);
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->OrderType = 'Attraction';
+                        $item = Item::with('ItemContentObj')->findOrFail($detail->Item);
+                        $item->IsParent = $item->ItemContentObj->IsUsingContentFromParent == true && $item->ItemContentObj->ItemContentSource != null;
+                        $item->ParentObj = !$item->IsParent ? $item->ItemContentObj : $item->ItemContentObj->SourceObj;
+                        $detail->Name = $item->Subtitle;
+                        $detail->Title = $item->ParentObj->Name;
+                        $detail->BusinessPartner = $item->ParentObj->PurchaseBusinessPartner;
+                        $detail->SalesDescription = substr($item->ParentObj->DescriptionEN, 0, 200);
+                        $detail->PurchaseAdult = $item->PurchaseAdult;
+                        $detail->PurchaseChild = $item->PurchaseChild;
+                        $detail->PurchaseInfant = $item->PurchaseInfant;
+                        $detail->PurchaseSenior = $item->PurchaseSenior;
+                        $detail->Image = $item->ParentObj->Image1;
+                        $detail->Date = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                        $detail->DateFrom = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                        $detail->DateUntil = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                        $detail->save();
+                        $this->saveDetailSameField($detail, $item, $dataPOS);
+                        $this->calculateDetailDateQty($detail);
+                        $this->calculateDetailAmount($detail);
+                        if(isset($row->APIType)) $detail->APIType = $row->APIType;
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+
+                if ($ttype == 'web' && isset($request->TravelOutboundDetails)) {
+                    if ($data->Details()->count() != 0) {
+                        $trvtransactiondetails = TravelTransactionDetail::where('TravelTransaction', $data->Oid)->where('OrderType', 'Outbound')->get();
+                        foreach ($trvtransactiondetails as $rowdb) {
+                            $found = false;
+                            foreach ($request->TravelOutboundDetails as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionDetail::where('Oid', $rowdb->Oid)->where('OrderType', 'Outbound')->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+                    foreach ($request->TravelOutboundDetails as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionDetail::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionDetail();
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName']);   
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->OrderType = 'Outbound';
+                        $item = Item::with('ItemContentObj')->findOrFail($detail->Item);
+                        $item->IsParent = $item->ItemContentObj->IsUsingContentFromParent == true && $item->ItemContentObj->ItemContentSource != null;
+                        $item->ParentObj = !$item->IsParent ? $item->ItemContentObj : $item->ItemContentObj->SourceObj;
+                        $detail->Name = $item->Subtitle;
+                        $detail->Title = $item->ParentObj->Name;
+                        $detail->BusinessPartner = $item->ParentObj->PurchaseBusinessPartner;
+                        $detail->SalesDescription = substr($item->ParentObj->DescriptionEN, 0, 200);
+                        $detail->PurchaseSGL = $item->PurchaseSGL;
+                        $detail->PurchaseTWN = $item->PurchaseTWN;
+                        $detail->PurchaseTRP = $item->PurchaseTRP;
+                        $detail->PurchaseQuad = $item->PurchaseQuad;
+                        $detail->PurchaseQuint = $item->PurchaseQuint;
+                        $detail->PurchaseCHT = $item->PurchaseCHT;
+                        $detail->PurchaseCWB = $item->PurchaseCWB;
+                        $detail->PurchaseCNB = $item->PurchaseCNB;
+                        $detail->Image = $item->ParentObj->Image1;
+                        $detail->Date = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                        $detail->DateFrom = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                        $detail->DateUntil = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                        $detail->save();
+                        $this->saveDetailSameField($detail, $item, $dataPOS);
+                        $this->calculateDetailDateQty($detail);
+                        $this->calculateDetailAmount($detail);
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (isset($request->TravelTransportDetails)) {
+                    if ($data->Details()->count() != 0) {
+                        $trvtransactiondetails = TravelTransactionDetail::where('TravelTransaction', $data->Oid)
+                            ->where('OrderType', 'Transport')
+                            ->get();
+
+                        foreach ($trvtransactiondetails as $rowdb) {
+                            $found = false;
+                            foreach ($request->TravelTransportDetails as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionDetail::where('Oid', $rowdb->Oid)->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+                    foreach ($request->TravelTransportDetails as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionDetail::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionDetail();
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName']);
+                        if ($row->Qty == "") $row->Qty = 0;
+                        if ($row->PurchaseAmount == "") $row->PurchaseAmount = 0;
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->OrderType = 'Transport';
+                        $detail->save();
+                        if ($ttype == 'web') {
+                            $item = Item::with('ItemContentObj')->findOrFail($detail->Item);
+                            $item->IsParent = $item->ItemContentObj->IsUsingContentFromParent == true && $item->ItemContentObj->ItemContentSource != null;
+                            $item->ParentObj = !$item->IsParent ? $item->ItemContentObj : $item->ItemContentObj->SourceObj;
+                            $detail->Name = $item->Name;
+                            $detail->Title = $item->ParentObj->Name;
+                            $detail->BusinessPartner = $item->ParentObj->PurchaseBusinessPartner;
+                            $detail->SalesDescription = $item->Description;
+                            $detail->Image = $item->TravelItemTransportObj->TravelTransportBrandObj ? $item->TravelItemTransportObj->TravelTransportBrandObj->Image : null;
+                            $detail->Date = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                            $detail->save();
+                            $this->saveDetailSameField($detail, $item, $dataPOS);
+                            $this->calculateDetailDateQty($detail);
+                            $this->calculateDetailAmount($detail);
+                        }
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (isset($request->TravelRestaurantDetails)) {
+                    if ($data->Details()->count() != 0) {
+                        $trvtransactiondetails = TravelTransactionDetail::where('TravelTransaction', $data->Oid)->where('OrderType', 'Restaurant')->get();
+                        foreach ($trvtransactiondetails as $rowdb) {
+                            $found = false;
+                            foreach ($request->TravelRestaurantDetails as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionDetail::where('Oid', $rowdb->Oid)->where('OrderType', 'Restaurant')->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->TravelRestaurantDetails as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionDetail::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionDetail();
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName']);
+                        if ($row->QtyAdult == "") $row->QtyAdult = 0;
+
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->OrderType = 'Restaurant';
+                        $detail->save();
+                        if ($ttype == 'web') {
+                            $item = Item::with('ItemContentObj')->findOrFail($detail->Item);
+                            $item->IsParent = $item->ItemContentObj->IsUsingContentFromParent == true && $item->ItemContentObj->ItemContentSource != null;
+                            $item->ParentObj = !$item->IsParent ? $item->ItemContentObj : $item->ItemContentObj->SourceObj;
+                            $detail->Name = $item->Subtitle;
+                            $detail->Title = $item->ParentObj->Name;
+                            $detail->BusinessPartner = $item->ParentObj->PurchaseBusinessPartner;
+                            $detail->SalesDescription = substr($item->ParentObj->DescriptionEN, 0, 200);
+                            $detail->PurchaseAdult = $item->PurchaseAdult;
+                            $detail->PurchaseChild = $item->PurchaseChild;
+                            $detail->PurchaseInfant = $item->PurchaseInfant;
+                            $detail->PurchaseSenior = $item->PurchaseSenior;
+                            $detail->Image = $item->ParentObj->Image1;
+                            $detail->Date = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                            $detail->DateFrom = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                            $detail->DateUntil = Carbon::now()->addHours(company_timezone())->toDateTimeString();
+                            $detail->save();
+                            $this->saveDetailSameField($detail, $item, $dataPOS);
+                            $this->calculateDetailDateQty($detail);
+                            $this->calculateDetailAmount($detail);
+                        }
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (isset($request->TravelHotelDetails)) {  
+                    if ($data->Details()->count() != 0) {
+                        $trvtransactiondetails = TravelTransactionDetail::where('TravelTransaction', $data->Oid)->where('OrderType','Hotel')->get();
+                        foreach ($trvtransactiondetails as $rowdb) {
+                            $found = false;
+                            foreach ($request->TravelHotelDetails as $rowapi) {
+                                if (isset($rowapi->Oid)) if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                            if (!$found) {
+                                $detail = TravelTransactionDetail::where('Oid', $rowdb->Oid)->where('OrderType', 'Hotel')->firstOrFail();
+                                $detail->delete();
+                            }
+                        }
+                    }
+
+                    foreach ($request->TravelHotelDetails as $row) {
+                        if (isset($row->Oid)) $detail = TravelTransactionDetail::findOrFail($row->Oid);
+                        else $detail = new TravelTransactionDetail();
+                        $detail->Company = $dataPOS->Company;
+                        $detail->TravelTransaction = $data->Oid;
+                        $disabled = array_merge(disabledFieldsForEdit(), ['ItemName','ItemObj','BusinessPartnerObj','BusinessPartnerName','TravelHotelRoomTypeName']);
+                        foreach ($row as $field => $key) {
+                            if (in_array($field, $disabled)) continue;
+                            $detail->{$field} = $row->{$field};
+                        }
+                        $detail->OrderType = 'Hotel';
+                        $detail->save();
+                        if ($ttype == 'web') {
+                            $item = Item::with('ItemContentObj')->findOrFail($detail->Item);
+                            $item->IsParent = $item->ItemContentObj->IsUsingContentFromParent == true && $item->ItemContentObj->ItemContentSource != null;
+                            $item->ParentObj = !$item->IsParent ? $item->ItemContentObj : $item->ItemContentObj->SourceObj;
+                            $detail->Name = $item->Name;
+                            $detail->Title = $item->ParentObj->Name;
+                            $detail->BusinessPartner = $item->ParentObj->PurchaseBusinessPartner;
+                            $detail->Image = $item->ParentObj->Image1;
+                            $detail->save();
+                            $this->saveDetailSameField($detail, $item, $dataPOS);
+                            $this->calculateDetailDateQty($detail);
+                            $this->calculateDetailAmount($detail);
+                        }
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                $subTotalAmount = 0;
+                foreach ($data->Details as $row) $subTotalAmount += $row->SalesTotal;
+                $dataPOS->SubtotalAmount = $subTotalAmount;
+                $dataPOS->save();
+                $this->calcTotal($dataPOS, $data);
+                $data = $this->show($dataPOS);
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }

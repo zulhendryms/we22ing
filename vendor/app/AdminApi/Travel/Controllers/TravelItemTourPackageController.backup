@@ -1,0 +1,183 @@
+<?php
+
+namespace App\AdminApi\Travel\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Travel\Entities\TravelItemTourPackage;
+use App\Core\Travel\Entities\TravelItemTourPackagePrice;
+use App\Core\Travel\Entities\TravelItemTourPackageOtherAmount;
+use App\Core\Travel\Entities\TravelItemTourPackageAttraction;
+use App\Core\Travel\Entities\TravelItemTourPackageRestaurant;
+use App\Core\Travel\Entities\TravelItemTourPackageTransport;
+use App\Core\Travel\Entities\TravelItemTourPackageItinerary;
+use App\Core\Travel\Entities\TravelItemTourPackageHotel;
+use App\Core\Security\Services\RoleModuleService;
+use App\AdminApi\Development\Controllers\CRUDLogicController;
+
+class TravelItemTourPackageController extends Controller
+{
+    protected $roleService;
+    public function __construct(
+        RoleModuleService $roleService
+    ) {
+        $this->roleService = $roleService;
+        $this->crudController = new CRUDLogicController();
+    }
+
+    public function config(Request $request)
+    {
+        $data = $this->crudController->config('trvitemtourpackage');
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    public function list(Request $request)
+    {
+        $data = DB::table('trvitemtourpackage as data');
+        $data = $this->crudController->list('trvitemtourpackage', $data, $request);
+        $role = $this->roleService->list('TravelItemTourPackage'); //rolepermission
+        foreach ($data->data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    public function index(Request $request)
+    {
+        $data = DB::table('trvitemtourpackage as data');
+        $data = $this->crudController->getIndex($data, $request, 'Name');
+        return response()->json($data, Response::HTTP_OK);
+    }
+
+    private function showSub($Oid)
+    {
+        $data = TravelItemTourPackage::whereNull('GCRecord');
+        $data = $this->crudController->detail('trvitemtourpackage', $data, $Oid);
+        return $data;
+    }
+
+    public function show(TravelItemTourPackage $data)
+    {
+        return response()->json($this->showSub($data->Oid), Response::HTTP_OK);
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+
+        try {
+            if (!$Oid) $data = new TravelItemTourPackage();
+            else $data = TravelItemTourPackage::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $data = $this->crudController->save('trvitemtourpackage', $data, $request);
+                $data->save();
+
+
+                if (isset($request->Prices)) {
+                    $this->crudController->deleteDetail($data->Prices, $request->Prices);
+                    foreach ($request->Prices as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackagePrice::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackagePrice();
+                        $detail = $this->crudController->save('trvitemtourpackageprice', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Prices');
+                    $data->fresh();
+                }
+
+                if (isset($request->Amounts)) {
+                    $this->crudController->deleteDetail($data->Amounts, $request->Amounts);
+                    foreach ($request->Amounts as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackageOtherAmount::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackageOtherAmount();
+                        $detail = $this->crudController->save('trvitemtourpackageotheramount', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Amounts');
+                    $data->fresh();
+                }
+
+                if (isset($request->Attractions)) {
+                    $this->crudController->deleteDetail($data->Attractions, $request->Attractions);
+                    foreach ($request->Attractions as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackageAttraction::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackageAttraction();
+                        $detail = $this->crudController->save('trvitemtourpackageattraction', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Attractions');
+                    $data->fresh();
+                }
+
+                if (isset($request->Restaurants)) {
+                    $this->crudController->deleteDetail($data->Restaurants, $request->Restaurants);
+                    foreach ($request->Restaurants as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackageRestaurant::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackageRestaurant();
+                        $detail = $this->crudController->save('trvitemtourpackagerestaurant', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Restaurants');
+                    $data->fresh();
+                }
+
+                if (isset($request->Transports)) {
+                    $this->crudController->deleteDetail($data->Transports, $request->Transports);
+                    foreach ($request->Transports as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackageTransport::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackageTransport();
+                        $detail = $this->crudController->save('trvitemtourpackagetransport', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Transports');
+                    $data->fresh();
+                }
+
+                if (isset($request->Details)) {
+                    $this->crudController->deleteDetail($data->Details, $request->Details);
+                    foreach ($request->Details as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackageItinerary::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackageItinerary();
+                        $detail = $this->crudController->save('trvitemtourpackageitinerary', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (isset($request->Hotels)) {
+                    $this->crudController->deleteDetail($data->Hotels, $request->Hotels);
+                    foreach ($request->Hotels as $row) {
+                        if (isset($row->Oid)) $detail = TravelItemTourPackageHotel::findOrFail($row->Oid);
+                        else $detail = new TravelItemTourPackageHotel();
+                        $detail = $this->crudController->save('trvitemtourpackagehotel', $detail, $row, $data);
+                        $detail->save();
+                    }
+                    $data->load('Hotels');
+                    $data->fresh();
+                }
+                if (!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('TravelItemTourPackage'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            $data->Action = $this->roleService->generateActionMaster($role);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(TravelItemTourPackage $data)
+    {
+        return $this->crudController->delete($this->module, $data);
+    }
+}

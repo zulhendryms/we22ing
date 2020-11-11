@@ -1,0 +1,138 @@
+<?php
+namespace App\Core\Internal\Services;
+
+use Redis;
+use App\Core\Internal\Resources\SystemCompany;
+use App\Core\Base\Services\HttpService;
+
+class SocketioService {
+
+    private $httpService; 
+    protected $listApp = [];
+
+    public function __construct(){
+        $this->setListApp();
+        $this->httpService = new HttpService();
+        $this->httpService->baseUrl('http://128.199.237.141:3000')->json();
+    }
+
+    public function sendNotification($user = 'all', $event){
+        
+        $to = isset($user) ? $user : 'all';
+        $app = 'administrator';
+        $comp = isset($event->param['Company']) ? $event->param['Company'] : '06beb986-2ca0-11ea-94dc-1a582ceaab05';
+        $title = isset($event->param['Title']) ? $event->param['Title'] : 'Title Testing';
+        $message = isset($event->param['Message']) ? $event->param['Message'] : 'Message Testing';
+        $icon = isset($event->param['Icon']) ? $event->param['Icon'] : 'SettingsIcon';
+        $color = isset($event->param['Color']) ? $event->param['Color'] : '7367F0';
+        $action = isset($event->param['Action']) ? $event->param['Action'] : null;
+        $tempApp = 'all'; // app kirim ke mana
+        
+        $event->param['to'] = 'administrator_'.$to;
+        dd($event->param);
+        $fields = $this->httpService->post('/notification',$event->param);
+        return $fields;
+
+        if (is_array($app) && count($app) > 0) {
+            $tempApp = [];
+            // ini akan check ketika array
+            // akan check di library company
+            // jika ada akan diambil Oid saja
+            // jika tidak ada, akan kosong
+            foreach ($this->listApp as $item) {
+                foreach ($app as $item1) {
+                    if ($item->name == $item1) {
+                        $tempApp[] = $item->system;
+                    }
+                }
+            }
+        } else if ($app == 'all') {
+            $tempApp = 'all';
+        } else {
+            foreach ($this->listApp as $item) {
+                if ($item->name == $app) {
+                    $tempApp = $item->system;
+                }
+            }
+        }
+
+        $temp = new \stdClass();
+        $temp->to = $to; // kepada siapa (user) bisa array (multi user), bisa single (oky), bisa semua (all)
+        $temp->app = $tempApp; // kepada siapa (atgtours,acetour) bisa array (multi user), bisa single (atgtours), bisa semua (all)
+        $temp->title = $title;
+        $temp->message = $message;
+        $temp->company = $comp;
+        $temp->color = $color;
+        $temp->icon = $icon;
+        $temp->action = $action;
+        $data = new \stdClass();
+        $data->event = "notification";
+        $data->data = $temp;
+        $redis = Redis::connection();
+        $redis->publish('message', json_encode($data));
+        return 'Sending';
+    }
+    
+    public function sendNotificationChat($to = 'all', $param){
+        
+        $app = 'administrator';
+        $comp = isset($param['Company']) ? $param['Company'] : '42ae7be6-01b6-4aa5-81e8-d7ad526b7d08';
+        $title = isset($param['Title']) ? $param['Title'] : 'Title Testing';
+        $message = isset($param['Message']) ? $param['Message'] : 'Message Testing';
+        $icon = isset($param['Icon']) ? $param['Icon'] : 'SettingsIcon';
+        $color = isset($param['Color']) ? $param['Color'] : '7367F0';
+        $action = isset($param['Action']) ? $param['Action'] : null;
+        $tempApp = 'all'; // app kirim ke mana
+        
+        $param['to'] = 'administrator_'.$to;
+        $fields = $this->httpService->post('/notification',$param);
+        return $fields;
+
+        if (is_array($app) && count($app) > 0) {
+            $tempApp = [];
+            // ini akan check ketika array
+            // akan check di library company
+            // jika ada akan diambil Oid saja
+            // jika tidak ada, akan kosong
+            foreach ($this->listApp as $item) {
+                foreach ($app as $item1) {
+                    if ($item->name == $item1) {
+                        $tempApp[] = $item->system;
+                    }
+                }
+            }
+        } else if ($app == 'all') {
+            $tempApp = 'all';
+        } else {
+            foreach ($this->listApp as $item) {
+                if ($item->name == $app) {
+                    $tempApp = $item->system;
+                }
+            }
+        }
+
+        $temp = new \stdClass();
+        $temp->to = $to; // kepada siapa (user) bisa array (multi user), bisa single (oky), bisa semua (all)
+        $temp->app = $tempApp; // kepada siapa (atgtours,acetour) bisa array (multi user), bisa single (atgtours), bisa semua (all)
+        $temp->title = $title;
+        $temp->message = $message;
+        $temp->company = $comp;
+        $temp->color = $color;
+        $temp->icon = $icon;
+        $temp->action = $action;
+        if ($param['Detail']) $temp->detail = $param['Detail'];
+        $data = new \stdClass();
+        $data->event = "new message";
+        $data->data = $temp;
+        $redis = Redis::connection();
+        $redis->publish('message', json_encode($data));
+        return 'Sending';
+    }
+
+
+    // library company
+    public function setListApp () {
+        $SystemCompany = new SystemCompany();
+        $this->listApp = $SystemCompany->getList();
+    }
+}

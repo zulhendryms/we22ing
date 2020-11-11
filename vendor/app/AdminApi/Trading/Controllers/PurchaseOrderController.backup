@@ -1,0 +1,673 @@
+<?php
+
+namespace App\AdminApi\Trading\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Base\Services\HttpService;
+
+use App\Core\Trading\Entities\PurchaseRequest;
+use App\Core\Trading\Entities\PurchaseRequestDetail;
+use App\Core\Trading\Entities\PurchaseOrder;
+use App\Core\Trading\Entities\PurchaseOrderDetail;
+use App\Core\Trading\Entities\PurchaseOrderLog;
+use App\Core\Trading\Entities\PurchaseDelivery;
+use App\Core\Trading\Entities\PurchaseDeliveryDetail;
+use App\Core\Trading\Entities\PurchaseInvoice;
+use App\Core\Trading\Entities\PurchaseInvoiceDetail;
+use App\Core\Master\Entities\Department;
+use App\Core\Accounting\Entities\CashBank;
+use App\Core\Accounting\Entities\CashBankDetail;
+use App\Core\Internal\Services\AutoNumberService;
+use App\Core\Internal\Entities\Status;
+use App\AdminApi\Pub\Controllers\PublicApprovalController;
+use App\AdminApi\Pub\Controllers\PublicPostController;
+use App\Core\Pub\Entities\PublicPost;
+use App\Core\Pub\Entities\PublicComment;
+use App\Core\Pub\Entities\PublicApproval;
+use App\Core\Pub\Entities\PublicFile;
+use App\Core\Master\Entities\Image;
+use Carbon\Carbon;
+use App\AdminApi\Development\Controllers\CRUDDevelopmentController;
+
+class PurchaseOrderController extends Controller
+{
+    protected $roleService;
+    private $publicPostController;
+    private $publicApprovalController;
+    private $autoNumberService;
+    private $crudController;
+    public function __construct(
+        RoleModuleService $roleService,
+        HttpService $httpService,
+        AutoNumberService $autoNumberService
+        )
+    {
+        $this->module = 'trdpurchaseorder';
+        $this->roleService = $roleService;
+        $this->autoNumberService = $autoNumberService;
+        $this->publicPostController = new PublicPostController(new RoleModuleService(new HttpService), new HttpService);
+        $this->publicApprovalController = new PublicApprovalController();
+        $this->crudController = new CRUDDevelopmentController();
+    }
+
+    public function config(Request $request) 
+    { 
+        try {
+            $data = $this->crudController->config($this->module);
+            $data[0]->topButton =[
+                [
+                    'name' => 'Add Purchase Request',
+                    'icon' => 'PlusIcon',
+                    'type' => 'open_form',
+                    'url' => "purchaseorder/form?type=PurchaseRequest"
+                ],
+                // [
+                // 'name' => 'Add Purchase Order',
+                // 'icon' => 'PlusIcon',
+                // 'type' => 'open_form',
+                // 'url' => "purchaseorder/form?type=PurchaseOrder"
+                // ]
+            ];
+            return response()->json($data, Response::HTTP_OK);
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    public function list(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $data = DB::table('trdpurchaseorder as data');
+
+            //SECURITY FILTER
+            // if (!$user->IsAccessAllPurchaseRequest) $data = $data->where('Department.Purchaser',$user->Oid);
+            if ($user->CompanyAccess) {
+                $data = $data->leftJoin('company AS CompanySecurity', 'CompanySecurity.Oid', '=', 'data.Company');
+                $tmp = json_decode($user->CompanyAccess);
+                $data = $data->whereIn('CompanySecurity.Code', $tmp);      
+            }
+            
+            //PRESEARCH
+            $type = $request->has('Type') ? $request->input('Type') : 'All';
+            if ($type == 'Entry') $data = $data->whereIn('Status.Code',['entry','requested']);
+            if ($type == 'Submit') $data = $data->whereIn('Status.Code',['submit']);
+            if ($type == 'Posted') $data = $data->whereIn('Status.Code',['posted','post']);
+            if ($type == 'Rejected') $data = $data->whereIn('Status.Code',['rejected','reject']);
+            if ($type == 'Cancelled') $data = $data->whereIn('Status.Code',['cancel']);
+            
+            $data = $this->crudController->list($this->module, $data, $request);
+            $role = $this->roleService->list('PurchaseOrder'); //rolepermission
+            foreach ($data->data as $row) {
+                $tmp = PurchaseOrder::findOrFail($row->Oid);
+                $row->Action = $this->action($tmp);
+                $row->Role = $this->generateRole($row, $role);
+            }
+            return response()->json($data, Response::HTTP_OK);
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    public function index(Request $request)
+    {
+        try {
+            $data = DB::table($this->module.' as data');
+            $data = $this->crudController->index($this->module, $data, $request, false);
+            return response()->json($data, Response::HTTP_OK);
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    private function showSub($Oid)
+    {
+        $data = $this->crudController->detail($this->module, $Oid);
+        $data->Action = $this->action($data);
+        return $data;
+    }
+
+    public function show(PurchaseOrder $data)
+    {
+        try {
+            return $this->showSub($data->Oid);
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        try {
+            $data = null;
+            DB::transaction(function () use ($request, &$data, $Oid) {
+                if (!$Oid) $request->Code = now()->format('ymdHis').'-'.str_random(3);
+                $data = $this->crudController->saving($this->module, $request, $Oid, false);
+                
+                //LOGIC
+                if ($data->PurchaseRequestCode == '<<Auto>>') $data->PurchaseRequestCode = $this->autoNumberService->generate($data, 'trdpurchaseorder','PurchaseRequestCode');
+                if (isset($data->SupplierChosen)) {
+                    $data->BusinessPartner = $data->{'Supplier'.$data->SupplierChosen};
+                    $data->PaymentTerm = $data->{'Supplier'.$data->SupplierChosen.'PaymentTerm'};
+                    $data->DiscountAmount = $data->{'DiscountAmount'.$data->SupplierChosen};
+                }
+                if (isset($data->PaymentTerm)) $data->DueDate = addPaymentTermDueDate($data->Date, $data->PaymentTerm);
+                $data->save();
+                
+                $this->publicPostController->sync($data, 'PurchaseOrder');
+                if (isset($data->Department) && !in_array($data->StatusObj->Code, ['submit','post','posted','cancel'])) 
+                    $this->publicApprovalController->formCreate($data, 'PurchaseOrder');
+                
+                if (isset($data->Details)) {
+                    foreach ($data->Details as $detail) {
+                        if (isset($data->SupplierChosen)) $detail->Price = $detail->{'Price'.$data->SupplierChosen};
+                        $detail = $this->crudController->saveTotal($detail);
+                    }
+                }
+
+                // $data = $this->crudController->saveTotal($data);
+                $this->calculateTotalAmount($data);
+                if (!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('PurchaseOrder'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(PurchaseOrder $data)
+    {
+        try {
+            $data = $this->crudController->config($this->module);
+            //pengecekan
+            $tmp = PurchaseOrderDetail::where('PurchaseOrder',$data->Oid)->pluck('Oid');
+
+            $check = PurchaseDeliveryDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+            if ($check->count() > 0) throw new \Exception("Purchase Order has already Purchase Delivery!");
+            $check = PurchaseInvoiceDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+            if ($check->count() > 0) throw new \Exception("Purchase Order has already Purchase Invoice!");
+
+            DB::transaction(function () use ($data) {
+                //delete
+                $delete = PublicApproval::where('PublicPost', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+                
+                $delete = Image::where('PublicPost', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+                
+                $delete = PublicComment::where('PublicPost', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+
+                $delete = PublicFile::where('PublicPost', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+                
+                $delete = PublicPost::where('Oid', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+                
+                $delete = PurchaseOrderLog::where('PurchaseOrder', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+
+                $delete = PurchaseOrderDetail::where('PurchaseOrder', $data->Oid)->get();
+                foreach ($delete as $row) $row->delete();
+
+                $data->delete();
+            });
+            return response()->json(
+                null,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function presearch(Request $request) {
+        return $this->crudController->presearch('trdpurchaseorder');
+    }
+
+    public function action(PurchaseOrder $data)
+    {
+        $url = 'purchaseorder';
+        $pra = 'paymentrequest';
+        $actionOpen = [
+            'name' => 'Open',
+            'icon' => 'ViewIcon',
+            'type' => 'open_url',
+            'url' => $url.'/form?item={Oid}&type='.($data->Type ?: 'PurchaseRequest'),
+        ];
+        $actionEntry = [
+            'name' => 'Change to ENTRY',
+            'icon' => 'UnlockIcon',
+            'type' => 'confirm',
+            'post' => $url.'/{Oid}/unpost',
+        ];
+        $actionPosted = [
+            'name' => 'Change to POSTED',
+            'icon' => 'CheckIcon',
+            'type' => 'confirm',
+            'post' => $url.'/{Oid}/post',
+        ];
+        $actionCancelled = [ 
+            'name' => 'Change to Cancelled',
+            'icon' => 'XIcon',
+            'type' => 'confirm',
+            'post' => $url.'/{Oid}/cancelled',
+        ];
+        $actionConvertToPurchaseDelivery = [
+            'name' => 'Convert to PurchaseDelivery',
+            'icon' => 'ZapIcon',
+            'type' => 'confirm',
+            'post' => $url.'/{Oid}/convert1',
+        ];
+        $actionConvertToPurchaseInvoice = [
+            'name' => 'Convert to PurchaseInvoice',
+            'icon' => 'ZapIcon',
+            'type' => 'confirm',
+            'post' => $url.'/{Oid}/convert2',
+        ];
+        $actionPrintprereportpo = [
+            'name' => 'Print Purchase Order',
+            'icon' => 'PrinterIcon',
+            'type' => 'open_report',
+            'get' => 'prereport/'.$url.'?oid={Oid}&report=purchaseorder',
+            'afterRequest' => 'init'
+        ];
+        $printprereportpr = [
+            'name' => 'Print Purchase Request',
+            'icon' => 'PrinterIcon',
+            'type' => 'open_report',
+            'get' => 'prereport/'.$url.'?oid={Oid}&report=purchaserequest',
+            'afterRequest' => 'init'
+        ];
+        $printprereportpra = [
+            'name' => 'Print Payment Request',
+            'icon' => 'PrinterIcon',
+            'type' => 'open_report',
+            'get' => 'prereport/'.$url.'?oid={Oid}&report='.$pra,
+            'afterRequest' => 'init'
+        ];
+        $actionDelete = [ 
+            'name' => 'Delete',
+            'icon' => 'TrashIcon',
+            'type' => 'confirm',
+            'delete' => $url.'/{Oid}'
+        ];
+        $actionSubmit = $this->publicApprovalController->formAction($data, 'PurchaseOrder','submit');
+        $actionRequest = $this->publicApprovalController->formAction($data, 'PurchaseOrder','request');
+        $actionCancel = [
+            'name' => 'Cancel',
+            'icon' => 'ArrowUpCircleIcon',
+            'type' => 'confirm',
+            'post' => $url.'/{Oid}/cancel',
+            'afterRequest' => 'apply'
+        ];
+        $return = [];
+        switch ($data->Status ? $data->StatusObj->Code : "entry") {
+            case "":
+                $return[] = $actionPosted;
+                $return[] = $actionOpen;
+                // $return[] = $actionDelete;
+                break;
+            case "request":
+                $return[] = $actionEntry;
+                $return[] = $actionSubmit;
+                break;
+            case "entry":
+                $return[] = $actionRequest;
+                $return[] = $actionSubmit;
+                // $return[] = $actionDelete;
+                $return[] = $actionCancel;
+                $return[] = $printprereportpr;
+                break;
+            case "submit":
+                $return = $this->publicApprovalController->formAction($data, 'PurchaseOrder','approval');
+                $return[] = $actionEntry;
+                $return[] = $printprereportpr;
+                break;
+            case "posted":
+                $return[] = $actionEntry;
+                $return[] = $actionConvertToPurchaseDelivery;
+                $return[] = $actionConvertToPurchaseInvoice;
+                $return[] = $actionPrintprereportpo;
+                $return[] = $printprereportpr;
+                break;
+        }
+        return $return;
+    }
+
+    private function calculateTotalAmount(PurchaseOrder $data) {
+        $totalAmount = 0;
+        $totalAmount1 = 0;
+        $totalAmount2 = 0;
+        $totalAmount3 = 0;
+        foreach ($data->Details as $row) {
+            if (isset($data->SupplierChosen)) $row->Price = $row->{'Price'.$data->SupplierChosen};
+            $totalAmount += ($row->Quantity ?: 0) * ($row->Price ?: 0);
+            $totalAmount1 += ($row->Quantity ?: 0) * ($row->Price1 ?: 0);
+            $totalAmount2 += ($row->Quantity ?: 0) * ($row->Price2 ?: 0);
+            $totalAmount3 += ($row->Quantity ?: 0) * ($row->Price3 ?: 0);
+        }
+        $data->SubtotalAmount = $totalAmount;
+        $data->TotalAmount = $data->SubtotalAmount + $data->AdditionalAmount - $data->DiscountAmount;
+        $data->Supplier1Amount = $totalAmount1 - $data->DiscountAmount1;
+        $data->Supplier2Amount = $totalAmount2 - $data->DiscountAmount2;
+        $data->Supplier3Amount = $totalAmount3 - $data->DiscountAmount3;
+        $data->TotalAmountWording = convert_number_to_words($data->TotalAmount);
+        $data->save();
+    }
+
+    public function statusUnpost(PurchaseOrder $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::where('Code', 'Entry')->first()->Oid;
+                $data->save();
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function statusPost(PurchaseOrder $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::where('Code', 'Posted')->first()->Oid;
+                $data->Type = 'PurchaseOrder';
+                $data->Code = $this->autoNumberService->generate($data, 'trdpurchaseorder');
+                $data->save();
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function cancelled(PurchaseOrder $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::cancelled()->first()->Oid;
+                $data->save();
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function convertToPurchaseDelivery(PurchaseOrder $data)
+    {
+        $tmp = PurchaseOrderDetail::where('PurchaseOrder',$data->Oid)->pluck('Oid');
+        $check = PurchaseDeliveryDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+        if ($check->count() > 0) throw new \Exception("Purchase Order has already Purchase Deliver");
+        $check = PurchaseInvoiceDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+        if ($check->count() > 0) throw new \Exception("Purchase Order has already Purchase Invoice");
+        $check = CashBankDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+        if ($check->count() > 0) throw new \Exception("Purchase Order has already Cash Bank");
+
+        $purchaseDelivery = new PurchaseDelivery();
+        try {
+            DB::transaction(function () use ($purchaseDelivery, &$data) {
+                $purchaseDelivery->PurchaseOrder = $data->Oid;
+                $purchaseDelivery->Company = Auth::user()->Company;
+                $purchaseDelivery->Code = '<<Auto>>';
+                $purchaseDelivery->Date = Carbon::now();
+                $purchaseDelivery->Account = $data->Account;
+                $purchaseDelivery->Currency = $data->Currency;
+                $purchaseDelivery->BusinessPartner = $data->BusinessPartner;
+                $purchaseDelivery->Quantity = $data->Quantity;
+                $purchaseDelivery->Employee = $data->Employee;
+                $purchaseDelivery->Warehouse = $data->Warehouse;
+                $purchaseDelivery->DiscountAmount = $data->DiscountAmount;
+                $purchaseDelivery->SubtotalAmount = $data->SubtotalAmount;
+                $purchaseDelivery->TotalAmount = $data->TotalAmount;
+                $purchaseDelivery->Rate = $data->Rate;
+                $purchaseDelivery->Status = Status::entry()->first()->Oid;
+                if (isset($data->PaymentTerm)) $purchaseDelivery->DueDate = addPaymentTermDueDate($data->Date, $data->PaymentTerm);
+                $purchaseDelivery->save();
+                $purchaseDelivery->Code = $this->autoNumberService->generate($purchaseDelivery->Oid, 'trdpurchasedelivery');
+                $purchaseDelivery->save();
+
+                $data->IsConvertPD = true;
+                $data->save();
+
+                foreach ($data->Details as $row) {
+                    $detail = new PurchaseDeliveryDetail();
+                    $detail->Company = $purchaseDelivery->Company;
+                    $detail->PurchaseDelivery = $purchaseDelivery->Oid;
+                    $detail->Sequence = $row->Sequence;
+                    $detail->PurchaseOrderDetail = $row->Oid;
+                    $detail->Item = $row->Item;
+                    $detail->Quantity = $row->Quantity;
+                    $detail->Price = $row->Price;
+                    $detail->Note = $row->Note;
+                    $detail->save();
+
+                    $row->QuantityDelivered = $row->Quantity;
+                    $row->save();
+                }
+                if (!$purchaseDelivery) throw new \Exception('Data is failed to be saved');
+            });
+
+            return response()->json(
+                $purchaseDelivery,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function convertToPurchaseInvoice(PurchaseOrder $data)
+    {
+        $tmp = PurchaseOrderDetail::where('PurchaseOrder',$data->Oid)->pluck('Oid');
+        $check = PurchaseDeliveryDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+        if ($check->count() > 0) throw new \Exception("Purchase Order has already Purchase Deliver");
+        $check = PurchaseInvoiceDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+        if ($check->count() > 0) throw new \Exception("Purchase Order has already Purchase Invoice");
+        $check = CashBankDetail::whereIn('PurchaseOrderDetail',$tmp)->get();
+        if ($check->count() > 0) throw new \Exception("Purchase Order has already Cash Bank");
+
+        $purchaseInvoice = new PurchaseInvoice();
+        try {
+            DB::transaction(function () use ($purchaseInvoice, &$data) {
+                $purchaseInvoice->PurchaseOrder = $data->Oid;
+                $purchaseInvoice->Company = Auth::user()->Company;
+                $purchaseInvoice->Code = '<<Auto>>';
+                $purchaseInvoice->Date = Carbon::now();
+                $purchaseInvoice->Account = $data->Account;
+                $purchaseInvoice->Currency = $data->Currency;
+                $purchaseInvoice->BusinessPartner = $data->BusinessPartner;
+                $purchaseInvoice->Quantity = $data->Quantity;
+                $purchaseInvoice->Employee = $data->Employee;
+                $purchaseInvoice->PaymentTerm = $data->PaymentTerm;
+                $purchaseInvoice->Warehouse = $data->Warehouse;
+                $purchaseInvoice->Status = $data->Status;
+                $purchaseInvoice->DiscountAmount = $data->DiscountAmount;
+                $purchaseInvoice->SubtotalAmount = $data->SubtotalAmount;
+                $purchaseInvoice->TotalAmount = $data->TotalAmount;
+                $purchaseInvoice->Rate = $data->Rate;
+                $purchaseInvoice->Status = Status::entry()->first()->Oid;
+                if (isset($data->PaymentTerm)) $purchaseInvoice->DueDate = addPaymentTermDueDate($data->Date, $data->PaymentTerm);
+                $purchaseInvoice->save();
+                $purchaseInvoice->Code = $this->autoNumberService->generate($purchaseInvoice->Oid, 'trdpurchaseinvoice');
+                $purchaseInvoice->save();
+
+                $data->IsConvertPI = true;
+                $data->save();
+
+                $details = [];
+                $totalAmount = 0;
+                foreach ($data->Details as $row) {
+                    $detail = new PurchaseInvoiceDetail();
+                    $detail->Company = $purchaseInvoice->Company;
+                    $detail->PurchaseInvoice = $purchaseInvoice->Oid;
+                    $detail->Sequence = $row->Sequence;
+                    $detail->PurchaseOrderDetail = $row->Oid;
+                    $detail->Item = $row->Item;
+                    $detail->Price = $row->Price;
+                    $detail->Quantity = $row->Quantity;
+                    $detail->Note = $row->Note;
+                    $detail->save();
+
+                    $totalAmount = $row->Quantity * $row->Price;
+
+                    $row->QuantityInvoiced = $row->Quantity;
+                    $row->save();
+                }
+                $purchaseInvoice->SubtotalAmount = $totalAmount;
+                $purchaseInvoice->TotalAmount = $purchaseInvoice->SubtotalAmount + $purchaseInvoice->AdditionalAmount - $purchaseInvoice->DiscountAmount;
+                $purchaseInvoice->save();
+                if (!$purchaseInvoice) throw new \Exception('Data is failed to be saved');
+            });
+            return response()->json(
+                $purchaseInvoice,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    private function generateRole($data, $role = null, $action = null)
+    {
+        if ($data instanceof PurchaseOrder) $status = $data->StatusObj->Code;
+        else $status = Status::entry();
+        if (!$role) $role = $this->roleService->list('PurchaseOrder');
+        if (!$action) $action = $this->roleService->action('PurchaseOrder');
+        if ($role) {
+            return [
+                'IsRead' => isset($role->IsRead) ? $role->IsRead : false,
+                'IsAdd' => isset($role->IsAdd) ? $role->IsAdd : false,
+                'IsEdit' => $this->roleService->isAllowDelete($status, isset($role->IsEdit) ? $role->IsEdit : false),
+                'IsDelete' => 0, //$this->roleService->isAllowDelete($row->StatusObj, $role->IsDelete),
+                'Cancel' => $this->roleService->isAllowCancel($status, $action->Cancel),
+                'Entry' => $this->roleService->isAllowEntry($status, $action->Entry),
+                'Post' => $this->roleService->isAllowPost($status, $action->Posted),
+                'ViewJournal' => $this->roleService->isPosted($status, 1),
+                'ViewStock' => $this->roleService->isPosted($status, 1),
+                'Print' => $this->roleService->isPosted($status, 1),
+            ];
+        }
+    }
+
+    public function statusEntry(PurchaseOrder $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::where('Code','entry')->first()->Oid;
+                $data->save();
+
+                $this->publicApprovalController->formApprovalReset($data);
+                $this->publicPostController->sync($data, 'PurchaseOrder');
+
+                $user = Auth::user();
+                $detail = new PurchaseOrderLog();
+                $detail->Company = $data->Company;
+                $detail->PurchaseOrder = $data->Oid;
+                $detail->Date = now()->addHours(company_timezone())->toDateTimeString();
+                $detail->User = $user->Oid;
+                $detail->Type = 'Entry';
+                $detail->NextUser = null;
+                $detail->save();
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function statusCancel(PurchaseOrder $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::where('Code','cancel')->first()->Oid;
+                $data->save();
+                $this->publicPostController->sync($data, 'PurchaseOrder');
+
+                $user = Auth::user();
+                $detail = new PurchaseOrderLog();
+                $detail->Company = $data->Company;
+                $detail->PurchaseOrder = $data->Oid;
+                $detail->Date = now()->addHours(company_timezone())->toDateTimeString();
+                $detail->User = $user->Oid;
+                $detail->Type = 'Canceled';
+                $detail->NextUser = null;
+                $detail->save();
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }    
+    
+}

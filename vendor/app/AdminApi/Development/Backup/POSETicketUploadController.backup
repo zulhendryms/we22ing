@@ -1,0 +1,659 @@
+<?php
+
+namespace App\AdminApi\POS\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\POS\Entities\ETicket;
+use App\Core\POS\Entities\POSETicketUpload;
+use App\Core\POS\Entities\POSETicketLog;
+use App\Core\POS\Resources\POSEticketUploadResource;
+use App\Core\POS\Resources\POSEticketUploadCollection;
+use Illuminate\Support\Facades\DB;
+use App\Core\POS\Services\POSETicketService;
+use App\Core\Accounting\Services\POSETicketUploadPostService;
+use App\Core\Internal\Entities\Status;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Pagination\LengthAwarePaginator;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Internal\Services\ExportExcelService;
+use Validator;
+use Carbon\Carbon;
+class POSETicketUploadController extends Controller
+{
+    protected $roleService;
+    protected $posETicketService;
+    protected $posEticketUploadPostService;
+    protected $excelExportService;
+    public function __construct(POSETicketService $posETicketService, POSETicketUploadPostService $posEticketUploadPostService,RoleModuleService $roleService, ExportExcelService $excelExportService)
+    {
+        $this->roleService = $roleService;
+        $this->posETicketService = $posETicketService;
+        $this->posEticketUploadPostService = $posEticketUploadPostService;
+        $this->excelExportService = $excelExportService;
+    }
+
+    public function summaryPresearch(Request $request) {
+        return [
+            [
+                'fieldToSave' => "ItemContent",
+                'type' => "autocomplete",
+                'column' => "1/5",
+                'source' => [],
+                'store' => "itemcontent/autocomplete",
+                'params' => [
+                    'term' => "",
+                    'type' => "combo",
+                    'itemtypecode' => 'Attraction'
+                ],
+                'hiddenField' => "ItemContentName"
+            ],
+            [
+                'type' => 'action',
+                'column' => '1/5'
+            ]
+        ];
+    }
+    public function summaryConfig(Request $request) {        
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = ['w'=> 600, 'r'=>0, 't'=>'text', 'n'=>'Name'];
+        $fields[] = ['w'=> 100, 'r'=>0, 't'=>'int', 'n'=>'Stock'];
+        $fields[] = ['w'=> 120, 'r'=>0, 't'=>'double', 'n'=>'CostPrice'];
+        $fields[] = ['w'=> 150, 'r'=>0, 't'=>'date',  'n'=>'DateExpiry',];
+        $fields[] = ['w'=> 200, 'r'=>0, 't'=>'date',  'n'=>'Uploaded',];
+        $fields = serverSideFields($fields);
+        foreach ($fields as &$row) { //combosource
+            if ($row['headerName']  == 'Company') $row['source'] = comboselect('company');
+        }
+        return $fields;
+    }
+    public function summaryList(Request $request) {
+        $company = Auth::user()->Company;
+        $query = "SELECT  i.Oid AS Item, i.Code, i.Name, COUNT(*) AS Stock, MAX(et.CostPrice), et.Type,
+            MAX(DATE_FORMAT(IFNULL(et.DateExpiry,'3000-01-01'), '%Y-%m-%d')) AS DateExpiry, 
+            MAX(et.CreatedAt) AS Uploaded
+            FROM poseticket et 
+            INNER JOIN mstitem i ON i.Oid = et.Item
+            WHERE et.PointOfSale IS NULL AND et.Company ='{$company}'
+            AND i.APIType = 'auto_stock'
+            GROUP BY i.Name, i.Code, i.Oid, et.Type
+            HAVING COUNT(*) > 0
+            ORDER BY i.Name";
+        $data = DB::select($query);
+        foreach($data as $row) $row->Action = [
+            [ 
+            'name' => 'Open',
+            'icon' => 'ArrowUpRightIcon',
+            'type' => 'open_form',
+            // 'url' => 'stock/eticket/list?ItemContent={Oid}&ItemContentName={Name}',
+            'url' => 'poseticketupload?ItemContent={Oid}&ItemContentName={Name}',
+            ]
+        ];
+        return $data;
+    }
+
+    public function listPresearch(Request $request) {
+        return [
+            [
+                'fieldToSave' => 'DateStart',
+                'overrideLabel' => 'Valid After',
+                'type' => 'inputdate',
+                'column' => '1/5',
+                'default' =>  '1000-01-01',
+            ],
+            [
+                'fieldToSave' => 'DateUntil',
+                'overrideLabel' => 'Expiry Before',
+                'type' => 'inputdate',
+                'column' => '1/5',
+                'default' => '3000-01-01',
+            ],
+            [
+
+                'fieldToSave' => "ItemContent",
+                'type' => "autocomplete",
+                'column' => "1/5",
+                'source' => [],
+                'store' => "itemcontent/autocomplete",
+                'params' => [
+                    'term' => "",
+                    'type' => "combo",
+                    'itemtypecode' => 'Attraction'
+                ],
+                'hiddenField' => "ItemContentName"
+            ],
+            [
+                'type' => 'action',
+                'column' => '1/5'
+            ]
+        ];
+    }
+    public function listConfig(Request $request) {
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = ['w'=> 600, 'r'=>0, 't'=>'text', 'n'=>'Name'];
+        $fields[] = ['w'=> 100, 'r'=>0, 't'=>'int', 'n'=>'Stock'];
+        $fields[] = ['w'=> 120, 'r'=>0, 't'=>'double', 'n'=>'CostPrice'];
+        $fields[] = ['w'=> 150, 'r'=>0, 't'=>'date',  'n'=>'DateValidFrom',];
+        $fields[] = ['w'=> 200, 'r'=>0, 't'=>'date',  'n'=>'DateExpiry',];
+        $fields[] = ['w'=> 200, 'r'=>0, 't'=>'date',  'n'=>'Uploaded',];
+        $fields = serverSideFields($fields);
+        foreach ($fields as &$row) { //combosource
+            if ($row['headerName']  == 'Company') $row['source'] = comboselect('company');
+        }
+        return $fields;
+    }
+    public function listList(Request $request) {
+        $company = Auth::user()->Company;
+        $criteria = '';
+        if ($request->has('DateStart')) $criteria = $criteria." AND et.DateValidFrom >= '".$request->input('DateStart')."'";
+        if ($request->has('DateUntil')) $criteria = $criteria." AND et.DateExpiry <= '".$request->input('DateUntil')."'";
+        if ($request->has('ItemContent')) $criteria = $criteria." AND i.ItemContent = '".$request->input('ItemContent')."'";
+        $query = "SELECT i.Oid, i.Oid AS Item, i.Code, i.Name, COUNT(*) AS Stock, et.CostPrice, et.Type,
+            DATE_FORMAT(IFNULL(et.DateExpiry,'3000-01-01'), '%Y-%m-%d') AS DateExpiry, 
+            DATE_FORMAT(et.DateValidFrom, '%Y-%m-%d') AS DateValidFrom,            
+            MAX(et.CreatedAt) AS Uploaded,
+            CASE WHEN DATEDIFF(et.DateExpiry, now()) <= 60
+                THEN 'ffa587' 
+                WHEN DATEDIFF(et.DateExpiry, now()) <= 30 THEN 'f5ee71' ELSE 'FFFFFF' END Color                
+            FROM poseticket et 
+            INNER JOIN mstitem i ON i.Oid = et.Item
+            WHERE et.PointOfSale IS NULL AND et.Company ='{$company}'
+            AND i.APIType = 'auto_stock' ".$criteria."            
+            GROUP BY et.CostPrice,et.DateExpiry, i.Name, i.Code, i.Oid, et.Type, et.DateValidFrom
+            HAVING COUNT(*) > 0
+            ORDER BY i.Name";
+        $data = DB::select($query);
+        foreach($data as $row) {
+            $row->Action = [
+                [ 
+                'name' => 'Open',
+                'icon' => 'ArrowUpRightIcon',
+                'type' => 'open_form',            
+                // eticket?item=6bd5a340-6057-40bc-996f-29e93ebecf07&costprice=20&dateexpire=2020-06-23&get=%2Fposeticketupload%2Fdetaillist
+                // 'url' => 'stock/eticket/detail?ItemContent={Oid}&ItemContentName={Name}&DateExpiry',
+                'url' => 
+'poseticketupload/eticket?item='.$row->Oid.'&costprice='.$row->CostPrice.'&dateexpire='.$row->DateExpiry.'&get=%2Fposeticketupload%2Fdetaillist',
+                ]
+            ];
+        }
+        return $data;
+    }    
+
+    public function detailPresearch(Request $request) {
+        return [
+            [
+
+                'fieldToSave' => "ItemContent",
+                'type' => "autocomplete",
+                'column' => "1/6",
+                'source' => [],
+                'store' => "itemcontent/autocomplete",
+                'params' => [
+                    'term' => "",
+                    'type' => "combo",
+                    'itemtypecode' => 'Attraction'
+                ],
+                'hiddenField' => "ItemContentName"
+            ],
+            [
+                'fieldToSave' => 'CostPrice',
+                'type' => 'inputtext',
+                'column' => '1/6',
+            ],
+            [
+                'fieldToSave' => 'DateStart',
+                'type' => 'inputdate',
+                'column' => '1/6',
+                'default' =>  date("Y-m-d", strtotime(now())),
+            ],
+            [
+                'fieldToSave' => 'DateUntil',
+                'type' => 'inputdate',
+                'column' => '1/6',
+                'default' => '3000-01-01',
+            ],
+            [
+                'type' => 'action',
+                'column' => '1/6'
+            ]
+        ];
+    }
+    private function detailfields() {
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');  
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'combo', 'n'=>'Item', 'f'=>'Item.Name',];   
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'combo', 'n'=>'PurchaseInvoice', 'f'=>'PurchaseInvoice.Code',];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'date', 'n'=>'CreatedAt'];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'FileName'];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'Type'];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'DateExpiry'];
+        $fields[] = ['w'=> 0, 'r'=>0, 't'=>'text', 'n'=>'CostPrice'];
+        return $fields;
+    }
+    public function detailconfig(Request $request) {
+        $fields = $this->detailfields();
+        $fields = serverSideFields($fields);
+        foreach ($fields as &$row) { //combosource
+            // if ($row['headerName'] == 'AccountGroup') $row['source'] = comboSelect('accaccountgroup');
+        }
+        return $fields;
+    }
+    public function detaillist(Request $request) {
+        $fields = $this->detailfields();
+        $company = Auth::user()->Company;
+        $data = DB::table('poseticket as data') //jointable
+            ->leftJoin('mstitem AS Item', 'Item.Oid', '=', 'data.Item')
+            ->leftJoin('trdpurchaseinvoice AS PurchaseInvoice', 'PurchaseInvoice.Oid', '=', 'data.PurchaseInvoice')
+            ->whereNull('data.PointOfSale')
+            ->where('data.Company',$company)
+            ->where('Item.Oid',$request->query('item'));
+        if ($request->has('costprice')) $data->where('data.CostPrice',$request->query('costprice'));
+        if ($request->has('dateexpire')) $data->whereRaw("DATE_FORMAT(data.DateExpiry, '%Y-%m-%d') = '".$request->query('dateexpire')."'");
+        if ($request->has('purchaseinvoice')) $data->where('PurchaseInvoice.Oid', $request->input('purchaseinvoice'));
+        $data = serverSideQuery($data, $fields, $request, 'poseticket');
+        return serverSideReturn($data, $fields);
+    }
+
+    public function index(Request $request)
+    {        
+        try {           
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = POSETicketUpload::whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('BusinessPartner', $user->BusinessPartner);
+            $data = $data->get();
+            return (new POSEticketUploadCollection($data))->type($type);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    
+    public function show(POSETicketUpload $data)
+    {
+        try {            
+            $data = POSETicketUpload::with('ETickets')
+                ->with(['ItemObj' => function ($query) {$query->addSelect('Oid','Code','Name');}, ])
+                ->with(['BusinessPartnerObj' => function ($query) {$query->addSelect('Oid','Code','Name');}, ])
+                ->with(['ETickets.PointOfSaleObj' => function ($query) {$query->addSelect('Oid','Code','Date');}, ])
+            ->findOrFail($data->Oid);
+            return $data;
+            // return (new POSEticketUploadResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function insert(Request $request)
+    {
+        try {            
+            $data = new POSETicketUpload();
+            DB::transaction(function () use ($request,&$data) {
+                $data->Item = $request->Item;
+                $data->CostPrice = $request->CostPrice;
+                $data->Note = $request->Note;
+                $data->save();
+            });
+
+            $data = (new POSEticketUploadResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function save(Request $request, $Oid = null)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+        // $dataArray = object_to_array($request);
+        
+        // $messsages = array(
+        //     'Item.required'=>__('_.Item').__('error.required'),
+        //     'Item.exists'=>__('_.Item').__('error.exists'),
+        // );
+        // $rules = array(
+        //     'Item' => 'required|exists:mstitem,Oid',
+        // );
+
+        // $validator = Validator::make($dataArray, $rules,$messsages);
+
+        // if ($validator->fails()) {
+        //     return response()->json(
+        //         $validator->messages(),
+        //         Response::HTTP_UNPROCESSABLE_ENTITY
+        //     );
+        // }
+
+        try {            
+            if (!$Oid) $data = new POSETicketUpload();
+            else $data = POSETicketUpload::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $disabled = ['Oid','ETickets','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                foreach ($request as $field => $key) {
+                    if (in_array($field, $disabled)) continue;
+                    $data->{$field} = $request->{$field};
+                }
+                $data->save();            
+
+                if ($data->ETickets()->count() != 0) {
+                    foreach ($data->ETickets as $rowdb) {
+                        $found = false;               
+                        foreach ($request->ETickets as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = ETicket::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->ETickets) {
+                    $details = [];  
+                    $disabled = ['Oid','POSETicketUpload','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','PointOfSale','PointOfSaleObj','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                    foreach ($request->ETickets as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = ETicket::findOrFail($row->Oid);
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;
+                                $detail->{$field} = $row->{$field};
+                            }
+                            $detail->save();
+                        } else {
+                            $arr = [];
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;                            
+                                $arr = array_merge($arr, [
+                                    $field => $row->{$field},
+                                ]);
+                            }
+                            $details[] = new ETicket($arr);
+                        }
+                    }
+                    $data->ETickets()->saveMany($details);
+                    $data->load('ETickets');
+                    $data->fresh();
+                }
+                if(!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $data = (new POSEticketUploadResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(POSETicketUpload $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->ETickets()->delete();
+                $data->delete();
+            });
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+
+    public function deleteEticket($Oid)
+    {        
+        $poseticketupload = ETicket::findOrFail($Oid)->ETicketUpload;
+        try {            
+            DB::transaction(function () use ( $Oid, &$poseticketupload) {                
+                $data = ETicket::findOrFail($Oid);
+                $deleted = $data->delete();
+                if($deleted && $poseticketupload != null){
+                    $dataPOSEticketUpload = POSETicketUpload::with('ETickets')->findOrFail($poseticketupload);
+                    $dataPOSEticketUpload->Count = $dataPOSEticketUpload->ETickets()->count();
+                    $dataPOSEticketUpload->save();
+                }
+            });
+
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function upload(Request $request, $Oid = null)
+    {
+        try {            
+            logger(1);
+            $input = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+            
+            DB::transaction(function () use ( $input, $request, &$data, $Oid) {
+                
+                // $request->file('POSEticketFile')->storeAs(
+                //     '', $data->FileName);
+
+                $files = $request->file('POSEticketFile');
+                logger($files);
+                $poseticket = POSETicketUpload::findOrFail($Oid);
+                $item = $poseticket->Item;
+                $cost = $poseticket->CostPrice;
+                // itemUpload
+                foreach ($files as $key => $value) {
+                    logger(1);
+                    $eticket = $this->posETicketService->create($value, [ 
+                        'ETicketUpload' => $Oid,
+                        'Item' => $item, 
+                        'CostPrice' => $cost,
+                        'DateExpiry' => null,
+                        // 'ETicketUpload' => $request->input('ETicketUpload')
+                    ]);
+                    logger(2);
+                    $result[] = $eticket->Oid;
+                }
+                // foreach ($files as $key => $value) {
+                //     $data = new ETicket();
+                //     $data->ETicketUpload = $Oid;
+                //     $data->Item = $item; //$input->Item;
+                //     $data->CostPrice = $cost; //$input->CostPrice;
+                //     $data->save();
+
+                //     $pos = $data->PointOfSaleObj;
+                //     $name = $data->Oid;
+                //     if (isset($pos)) $name .= "_{$pos->Oid}_{$pos->Code}";
+                //     $name .= "_".str_random(16);
+                //     $data->FileName = $name;
+                //     $data->save();                    
+                //     $value->storeAs(
+                //         'private/pos/etickets', $data->FileName.'.pdf'
+                //     );
+                // }
+            });
+
+            // $data = (new POSEticketUploadResource($data))->type('detail');
+            $data = POSETicketUpload::with('ETickets')->findOrFail($Oid);
+            $data->Count = $data->ETickets()->count();
+            $data->save();
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function post(POSETicketUpload $data)
+    {
+        try {
+            $this->posEticketUploadPostService->post($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function unpost(POSETicketUpload $data)
+    {
+        try {
+            $this->posEticketUploadPostService->unpost($data->Oid);
+            
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function amendment(Request $request)
+    {
+        try {
+            DB::transaction(function () use ($request) {
+                $datevalid = $request->has('datevalid') ? $request->input('datevalid') : now()->addHours(company_timezone())->toDateTimeString();
+                $dateexpiry = $request->has('dateexpiry') ? $request->input('dateexpiry') : now()->addHours(company_timezone())->toDateTimeString();
+                $cost = $request->has('cost') ? $request->input('cost') : 0;
+                
+                if ($request->has('eticket')) $data = ETicket::whereIn('Oid',$request->eticket)->get(); // tick
+                elseif ($request->has('eticketlist')) {                
+                    // $req = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+                    $etickets = []; // textarea multirow
+                    // foreach (preg_split("/((\r?\n)|(\r\n?))/", $req->eticketlist) as $line) {
+                    foreach (preg_split("/((\r?\n)|(\r\n?))/", $request->input('eticketlist')) as $line) {
+                        $etickets = array_merge($etickets, [$line]);
+                    }
+                    $data = ETicket::whereIn('Oid',$etickets)->get();                     
+                }
+                
+                foreach($data as $row) {
+                    if (isset($row->DateValidFrom)) $row->DateValidFrom = $datevalid;
+                    if (isset($row->DateExpiry)) $row->DateExpiry = $dateexpiry;
+                    if (isset($row->CostPrice)) $row->CostPrice = $cost;
+                    $row->save();
+
+                    $detail = new POSEticketLog();
+                    $detail->POSEticket = $row->Oid;
+                    $detail->CostPrice = $row->CostPrice;
+                    $detail->DateValidFrom = Carbon::parse($row->DateValidFrom)->format('Y-m-d');
+                    $detail->DateExpiry = Carbon::parse($row->DateExpiry)->format('Y-m-d');
+                    $detail->Description = 'Updated cost & expiry';
+                    $detail->save();
+                }
+            });
+
+            $data = ETicket::whereIn('Oid',$request->eticket)->get();
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function unlink(Request $request)
+    {
+        try {
+            DB::transaction(function () use ($request) {
+                $Etickets = $request->query('eticket');
+
+                if($Etickets){
+                    $etickets = '';
+                    foreach ($Etickets as $key => $value) {
+                        $etickets = ($etickets ? $etickets."," : "")."'".$value."'";
+                    }
+                }
+
+                $query = "SELECT e.*, ic.APIType AS ItemAPIType
+                    FROM poseticket e
+                    LEFT OUTER JOIN pospointofsale p ON e.PointOfSale = p.Oid
+                    LEFT OUTER JOIN traveltransaction t ON p.Oid = t.Oid
+                    LEFT OUTER JOIN trvtransactiondetail d ON d.TravelTransaction = t.Oid
+                    LEFT OUTER JOIN mstitem i ON d.Item = i.Oid
+                    LEFT OUTER JOIN mstitemcontent ic ON i.ItemContent = ic.Oid
+                    WHERE e.Oid IN ($etickets)";
+                $data = DB::select($query);
+                
+                foreach($data as $row) {
+                    if($row->ItemAPIType == 'manual_gen' || $row->ItemAPIType == 'manual_up'){
+                        $query = "DELETE FROM poseticket WHERE Oid = '{$row->Oid}'";
+                        DB::delete($query);
+                    }else{
+                        $query = "UPDATE poseticket e SET e.PointOfSale = NULL, e.TravelTransactionDetail = NULL WHERE e.Oid = '{$row->Oid}'";
+                        DB::update($query);
+
+                        $detail = new POSEticketLog();
+                        $detail->POSEticket = $row->Oid;
+                        $detail->Description = 'unlink';
+                        $detail->save();
+                    }
+
+                    
+                }
+            });
+
+            return response()->json(
+                null,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function export(Request $request)
+    {
+        $company = Auth::user()->Company;
+        $query = "SELECT  i.Oid AS Item, i.Code, i.Name, COUNT(*) AS Stock, et.CostPrice,DATE_FORMAT(et.DateExpiry, '%Y-%m-%d') AS DateExpiry
+            FROM poseticket et 
+            INNER JOIN mstitem i ON i.Oid = et.Item
+            WHERE et.PointOfSale IS NULL AND et.Company ='{$company}'
+            GROUP BY et.CostPrice,et.DateExpiry, i.Name, i.Code, i.Oid
+            HAVING COUNT(*) > 0
+            ORDER BY i.Name";
+        $data = DB::select($query);
+       
+        return $this->excelExportService->export($data);
+    }
+
+}
+            

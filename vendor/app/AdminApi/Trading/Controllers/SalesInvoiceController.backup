@@ -1,0 +1,508 @@
+<?php
+
+namespace App\AdminApi\Trading\Controllers;
+
+use Validator;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Trading\Entities\SalesInvoice;
+use App\Core\Accounting\Entities\CashBank;
+use App\Core\Accounting\Entities\CashBankDetail;
+use App\Core\Accounting\Entities\Account;
+use App\Core\Master\Entities\BusinessPartnerGroupUser;
+use App\Core\Trading\Entities\SalesInvoiceDetail;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Accounting\Services\SalesInvoiceService;
+use App\Core\Internal\Entities\Status;
+use App\AdminApi\Development\Controllers\CRUDDevelopmentController;
+
+class SalesInvoiceController extends Controller
+{
+    protected $salesInvoiceService;
+    protected $roleService;
+    private $crudController;
+    public function __construct(
+        SalesInvoiceService $salesInvoiceService,
+        RoleModuleService $roleService
+    ) {
+        $this->salesInvoiceService = $salesInvoiceService;
+        $this->roleService = $roleService;
+        $this->crudController = new CRUDDevelopmentController();
+    }
+
+    public function config(Request $request)
+    {
+        try {
+            return $this->crudController->config('trdsalesinvoice');
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    public function list(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $data = DB::table('trdsalesinvoice as data');
+
+            // filter businesspartnergroupuser
+            $businessPartnerGroupUser = BusinessPartnerGroupUser::select('BusinessPartnerGroup')->where('User', $user->Oid)->pluck('BusinessPartnerGroup');
+            if ($businessPartnerGroupUser->count() > 0) $data->whereIn('BusinessPartner.BusinessPartnerGroup', $businessPartnerGroupUser);
+
+            $data = $this->crudController->list('trdsalesinvoice', $data, $request);
+            $role = $this->roleService->list('SalesInvoice'); //rolepermission
+            // foreach ($data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+            foreach ($data->data as $row) {
+                $tmp = SalesInvoice::findOrFail($row->Oid);
+                $row->Action = $this->action($tmp);
+                $row->Role = $this->generateRole($row, $role);
+            }
+            return response()->json($data, Response::HTTP_OK);
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    public function presearch(Request $request)
+    {
+        try {
+            return $this->crudController->presearch('trdsalesinvoice');
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    public function index(Request $request)
+    {
+        try {
+            return $this->crudController->index('trdsalesinvoice', $request, false);
+        } catch (\Exception $e) {
+  return response()->json(
+  errjson($e), 
+Response::HTTP_UNPROCESSABLE_ENTITY);
+}
+    }
+
+    private function showSub($Oid)
+    {
+        $data = $this->crudController->detail('trdsalesinvoice', $Oid);
+        $data->Action = $this->action($data);
+        return $data;
+    }
+
+    public function show(SalesInvoice $data)
+    {
+        return response()->json($this->showSub($data->Oid), Response::HTTP_OK);
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        try {
+            // if (!$Oid) $data = new SalesInvoice();
+            // else $data = SalesInvoice::where('Oid',$Oid)->first();
+            // DB::transaction(function () use ($request, &$data) {
+            //     $user = Auth::user();
+            //     $data = $this->crudController->save('trdsalesinvoice', $data, $request);
+            //     if (isset($data->PaymentTerm)) $data->DueDate = addPaymentTermDueDate($data->Date, $data->PaymentTerm);
+            //     $data->save();
+
+            //     if (isset($request->Details)) {
+            //         $this->crudController->deleteDetail($data->Details, $request->Details);
+            //         $detail = null;
+            //         foreach ($request->Details as $row) {
+            //             if (isset($row->Oid)) $detail = SalesInvoiceDetail::where('Oid',$row->Oid)->first();
+            //             if (!$detail) $detail = new SalesInvoiceDetail();
+            //             $detail = $this->crudController->save('trdsalesinvoicedetail', $detail, $row, $data);
+            //             $detail = $this->crudController->saveTotal($detail);
+            //             $detail->save();
+            //         }
+            //         $data->load('Details');
+            //         $data->fresh();
+            //     }
+            //     $data = $this->crudController->saveTotal($data);
+            //     $data->save();
+
+            //     if (!$data) throw new \Exception('Data is failed to be saved');
+            // });
+
+            $data = $this->crudController->saving('trdsalesinvoice', $request, $Oid, false);
+            if (isset($data->PaymentTerm)) $data->DueDate = addPaymentTermDueDate($data->Date, $data->PaymentTerm);
+            foreach($data->Details as $row) {
+                $row = $this->crudController->saveTotal($row);
+                $row->save();
+            }
+            $data = $this->crudController->saveTotal($data);
+
+            $role = $this->roleService->list('SalesInvoice'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            $data->Action = $this->roleService->generateActionMaster($role);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(SalesInvoice $data)
+    {
+        return $this->crudController->delete($this->module, $data);
+    }
+
+    public function post(SalesInvoice $data)
+    {
+        try {
+            $this->salesInvoiceService->post($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function unpost(SalesInvoice $data)
+    {
+        try {
+            $this->salesInvoiceService->unpost($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function cancelled(SalesInvoice $data)
+    {
+        try {
+            $this->salesInvoiceService->cancelled($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function action(SalesInvoice $data)
+    {
+        $url = 'salesinvoice';
+        $actionEntry = [
+            'name' => 'Change to ENTRY',
+            'icon' => 'UnlockIcon',
+            'type' => 'confirm',
+            'post' => $url . '/{Oid}/unpost',
+        ];
+        $actionPosted = [
+            'name' => 'Change to POSTED',
+            'icon' => 'CheckIcon',
+            'type' => 'confirm',
+            'post' => $url . '/{Oid}/post',
+        ];
+        $actionconvertToReceipt = [
+            'name' => 'Convert To Receipt',
+            'icon' => 'ZapIcon',
+            'type' => 'global_form',
+            'post' => $url . '/{Oid}/convert',
+            'showModal' => false,
+            'post' => 'task/{Oid}',
+            'afterRequest' => "init",
+            'form' => [
+                [
+                    'fieldToSave' => "Account",
+                    'hiddenField' => "AccountName",
+                    'type' => "autocomplete",
+                    'column' => "1/2",
+                    'default' => null,
+                    'store' => "autocomplete/account",
+                    'source' => [],
+                    "onChange" => [
+                        'action' => "request",
+                        "get" => "/currency/rate?currency={Currency}&date={Date}",
+                        "link" => "Rate",
+                    ],
+                    'params' => [
+                        "form" => "cashbank",
+                        "term" => "",
+                        "type" => "combo",
+                    ]
+                ],
+                [
+                    'fieldToSave' => "Currency",
+                    "disabled" => true,
+                    "hiddenField" => "CurrencyName",
+                    "source" => "currency",
+                    "type" => "combobox",
+                ],
+                [
+                    'fieldToSave' => "Rate",
+                    'type' => "inputtext",
+                    'default' => 1,
+                ],
+                [
+                    'fieldToSave' => "Amount",
+                    'overrideLabel' => "Amount to pay",
+                    'type' => "inputarea",
+                    'default' => null,
+                ],
+            ]
+        ];
+        $actionconvertToReceipt = [
+            'name' => 'Convert To Receipt',
+            'icon' => 'ZapIcon',
+            'type' => 'global_form',
+            'post' => $url . '/{Oid}/convert',
+        ];
+        $actionCancelled = [
+            'name' => 'Change to Cancelled',
+            'icon' => 'XIcon',
+            'type' => 'confirm',
+            'post' => $url . '/{Oid}/cancelled',
+        ];
+        $actionPrintprereportsi = [
+            'name' => 'Print (Standard)',
+            'icon' => 'PrinterIcon',
+            'type' => 'open_report',
+            'get' => 'prereport/' . $url . '/{Oid}',
+        ];
+        $actionPrinthalfcontinous = [
+            'name' => 'Print (half continuous)',
+            'icon' => 'PrinterIcon',
+            'type' => 'open_report',
+            'get' => 'report/faktursalesinvoice/{Oid}',
+        ];
+        $actionPrintAceTours = [
+            'name' => 'Print (Ace Tours)',
+            'icon' => 'PrinterIcon',
+            'type' => 'open_report',
+            'get' => 'prereport/invoice/{Oid}',
+        ];
+        $actionViewJournal = [
+            'name' => 'View Journal',
+            'icon' => 'BookOpenIcon',
+            'type' => 'open_grid',
+            'get' => 'journal?' . $url . '={Oid}',
+        ];
+        $actionViewStock = [
+            'name' => 'View Stock',
+            'icon' => 'PackageIcon',
+            'type' => 'open_grid',
+            'get' => 'stock?' . $url . '={Oid}',
+        ];
+        $actionDelete = [
+            'name' => 'Delete',
+            'icon' => 'TrashIcon',
+            'type' => 'confirm',
+            'delete' => $url . '/{Oid}'
+        ];
+        $return = [];
+        // switch ($data->StatusObj->Code) {
+        switch ($data->Status ? $data->StatusObj->Code : "entry") {
+            case "":
+                $return[] = $actionPosted;
+                $return[] = $actionDelete;
+                $return[] = $actionCancelled;
+                break;
+            case "posted":
+                $return[] = $actionEntry;
+                $return[] = $actionconvertToReceipt;
+                $return[] = $actionPrintprereportsi;
+                $return[] = $actionPrinthalfcontinous;
+                $return[] = $actionPrintAceTours;
+                $return[] = $actionViewJournal;
+                $return[] = $actionViewStock;
+                break;
+            case "entry":
+                $return[] = $actionPosted;
+                $return[] = $actionCancelled;
+                $return[] = $actionDelete;
+                break;
+        }
+        return $return;
+    }
+
+    public function convertToReceipt(SalesInvoice $data, Request $request)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent())))); //WILLIAM ZEF
+        $cashbank = new CashBank();
+        try {
+            DB::transaction(function () use ($request, $cashbank, &$data) {
+                $cashbank->Type = 2; //receipt
+                $account = Account::with('CurrencyObj')->findOrFail($request->Account);
+                $cur = $account->CurrencyObj;
+                $cashbank->Company = Auth::user()->Company;
+                $cashbank->Code = '<<Auto>>';
+                $cashbank->Date = Carbon::now();
+                $cashbank->Account = $account->Oid;
+                $cashbank->Currency = $account->Currency;
+                $cashbank->BusinessPartner = $data->BusinessPartner;
+                $cashbank->Note = $data->Note;
+                $cashbank->Rate = $request->Rate ?: $account->CurrencyObj->getRate($cashbank->Date)->MidRate;
+                $cashbank->Status = Status::entry()->first()->Oid;
+                $cashbank->save();
+                $cashbank->Code = $cashbank->Oid, 'acccashbank');
+                $cashbank->save();
+
+                $details = [];
+                if ($cashbank->Currency == $data->Currency) {
+                    $amountCashBank = $data->TotalAmount;
+                    $amountCashBankBase = $cur->toBaseAmount($data->TotalAmount, $data->Rate);
+                } else {
+                    $amountCashBank = $request->Amount;
+                    $amountCashBankBase = $cur->toBaseAmount($request->Amount, $data->Rate);
+                }
+                $details[] = new CashBankDetail([
+                    'SalesInvoice' => $data->Oid,
+                    'Account' => $data->Account,
+                    'Currency' => $data->Currency,
+                    'Rate' => $data->Rate,
+                    'AmountInvoice' => $data->TotalAmount,
+                    'AmountInvoiceBase' => $cur->toBaseAmount($data->TotalAmount, $data->Rate),
+                    'AmountCashBank' => $amountCashBank,
+                    'AmountCashBankBase' => $amountCashBankBase,
+                ]);
+                $cashbank->Details()->saveMany($details);
+
+                if (!$cashbank) throw new \Exception('Data is failed to be saved');
+
+                $strOid = '';
+                foreach ($cashbank->Details as $rowdb) {
+                    $strOid = $strOid . ($strOid ? ", " : "") . "'" . $rowdb->SalesInvoice . "'";
+                }
+                $query = "UPDATE trdsalesinvoice sinv
+                    LEFT OUTER JOIN (
+                        SELECT cbd.SalesInvoice, SUM(IFNULL(cbd.AmountInvoice,0)) AS PaidAmount 
+                        FROM acccashbankdetail cbd 
+                        WHERE cbd.SalesInvoice IN (" . $strOid . ") 
+                        AND cbd.GCRecord IS NULL GROUP BY cbd.SalesInvoice
+                    ) cbd ON cbd.SalesInvoice = sinv.Oid
+                    SET sinv.PaidAmount = IFNULL(cbd.PaidAmount,0)
+                    WHERE sinv.Oid IN (" . $strOid . ")";
+                if ($strOid != '') DB::Update($query);
+            });
+
+            return response()->json(
+                $cashbank,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function partialSalesOrder(Request $request)
+    {
+        $query = "SELECT so.*, CONCAT(i.Name,' - ',i.Code) AS Name,
+                    (IFNULL(so.TotalAmount,0) - IFNULL(so.ReceiptAmount,0)) AS OutstandingAmount, c.Code AS CurrencyCode
+                    FROM trdsalesorder so
+                    LEFT OUTER JOIN trdsalesorderdetail sod ON so.Oid = sod.SalesOrder
+                    LEFT OUTER JOIN mstitem i ON sod.Item = i.Oid
+                    LEFT OUTER JOIN sysstatus s ON so.Status = s.Oid
+                    LEFT OUTER JOIN mstcurrency c ON c.Oid = so.Currency
+                    WHERE (IFNULL(so.TotalAmount,0) - IFNULL(so.ReceiptAmount,0)) > 0
+                    AND so.GCRecord IS NULL 
+                    AND so.Oid NOT IN ({$request->input('exception')})
+                    AND so.BusinessPartner = '{$request->input('businesspartner')}'
+                    AND DATE_FORMAT(so.Date, '%Y-%m-%d') <= '{$request->input('date')}'
+                    AND s.Code = 'posted'";
+        $data = DB::select($query);
+
+
+        return response()->json(
+            $data,
+            Response::HTTP_OK
+        );
+    }
+
+    public function partialSalesOrderAdd(Request $request)
+    {
+        try {
+            $detail = [];
+            DB::transaction(function () use ($request, &$detail) {
+                $salesInvoice = SalesInvoice::findOrFail($request->input('oid'));
+                $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+                $string = "";
+                foreach ($request as $row) {
+                    $string = ($string ? $string . "," : null) . "'" . $row . "'";
+                }
+                $query = "SELECT sod.*, (IFNULL(sod.Quantity,0) - IFNULL(sod.QuantityInvoiced,0)) AS OutstandingQuantity
+                            FROM trdsalesorder so
+                            LEFT OUTER JOIN trdsalesorderdetail sod ON sod.SalesOrder = so.Oid
+                            LEFT OUTER JOIN sysstatus s ON so.Status = s.Oid
+                            WHERE (IFNULL(so.TotalAmount,0) - IFNULL(so.ReceiptAmount,0)) > 0
+                            AND so.GCRecord IS NULL AND sod.Oid IN (" . $string . ")
+                            ";
+                $data = DB::select($query);
+
+                foreach ($data as $row) {
+                    $details = new SalesInvoiceDetail();
+                    $details->SalesInvoice = $salesInvoice->Oid;
+                    $details->SalesOrderDetail = $row->Oid;
+                    $details->Company = $row->Company;
+                    $details->Account = $row->Account;
+                    $details->Item = $row->Item;
+                    $details->Quantity = $row->OutstandingQuantity;
+                    $details->QuantityBase = $row->OutstandingQuantity;
+                    $details->ItemUnit = $row->ItemUnit;
+                    $details->Price = $row->Price;
+                    $details->DiscountAmount = $row->DiscountAmount;
+                    $details->DiscountPercentage = $row->DiscountPercentage;
+                    $details->Status = $row->Status;
+                    $details->SubtotalAmount = $row->OutstandingQuantity * $row->Price;
+                    $details->TotalBase = $row->SubtotalAmount - $row->DiscountAmount;
+
+                    $details->save();
+                    $detail[] = $details;
+                }
+            });
+
+            return response()->json(
+                $detail,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    private function generateRole($data, $role = null, $action = null)
+    {
+        if ($data instanceof SalesInvoice) $status = $data->StatusObj->Code;
+        else $status = Status::entry();
+        if (!$role) $role = $this->roleService->list('SalesInvoice');
+        if (!$action) $action = $this->roleService->action('SalesInvoice');
+        return [
+            'IsRead' => $role->IsRead,
+            'IsAdd' => $role->IsAdd,
+            'IsEdit' => $this->roleService->isAllowDelete($status, $role->IsEdit),
+            'IsDelete' => 0, //$this->roleService->isAllowDelete($row->StatusObj, $role->IsDelete),
+            'Cancel' => $this->roleService->isAllowCancel($status, $action->Cancel),
+            'Entry' => $this->roleService->isAllowEntry($status, $action->Entry),
+            'Post' => $this->roleService->isAllowPost($status, $action->Posted),
+            'ViewJournal' => $this->roleService->isPosted($status, 1),
+            'ViewStock' => $this->roleService->isPosted($status, 1),
+            'Print' => $this->roleService->isPosted($status, 1),
+        ];
+    }
+}

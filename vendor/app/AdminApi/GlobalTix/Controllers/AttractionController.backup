@@ -1,0 +1,141 @@
+<?php
+
+namespace App\AdminApi\GlobalTix\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\GlobalTix\Entities\Attraction;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Core\Security\Services\RoleModuleService;
+
+class AttractionController extends Controller
+{
+    protected $roleService;
+    public function __construct(RoleModuleService $roleService)
+    {
+        $this->roleService = $roleService;
+    }
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = ['w'=> 200, 'n'=>'Title', 'h'=>0,];
+        $fields[] = serverSideConfigField('IsActive');
+        $fields[] = ['w'=> 200, 'n'=>'CountryName', ];
+        $fields[] = ['w'=> 200, 'n'=>'CityName', ];
+        return $fields;
+    }
+
+    public function config(Request $request) {
+        return serverSideFields($this->fields());
+    }
+    public function list(Request $request) {
+        $fields = $this->fields();
+        $data = DB::table('globaltixattraction as data') //jointable
+            ->whereNotNull('Title');
+        $data = serverSideQuery2($data, $fields, $request,'Title');
+        $role = $this->roleService->list('Item'); //rolepermission
+        foreach($data as $row) $row->Role = [
+            'IsRead' => isset($role->IsRead) ? $role->IsRead : false,
+            'IsAdd' => false,
+            'IsEdit' => isset($role->IsEdit) ? $role->IsEdit : false,
+            'IsDelete' => isset($role->IsDelete) ? $role->IsDelete : false,
+        ];
+        return serverSideReturn($data, $fields);
+    }
+    
+
+    public function list2(Request $request) {
+        $data = Attraction::limit(500)->whereNotNull('Title');
+        // $data = $data::with('CurrencyObj')->orderBy('CurrencyObj.Code','desc');
+        // $data = $data->with(['CurrencyObj' => function ($query) {
+        //     $query->orderBy('Code','desc');
+        // }]);
+
+        //FILTERING
+        if ($request->has('Code')) $data = $data->whereIn('Code', $request->query('Code'));
+        if ($request->has('Title')) $data = $data->whereIn('Title', $request->query('Title'));
+        if ($request->has('CountryName')) $data = $data->whereIn('CountryName', $request->query('CountryName'));
+        if ($request->has('CityName')) $data = $data->whereIn('CityName', $request->query('CityName'));
+        
+        //PAGINATION
+        $page = $request->query->has('page') ? $request->query('page') : 1;
+        $size = $request->query->has('size') ? $request->query('size') : 20;
+        $sort = $request->query->has('sort') ? $request->query('sort') : 'Title';
+        $sorttype = $request->query->has('sorttype') ? $request->query('sorttype') : 'asc';        
+        $data = $data->orderBy($sort, $sorttype)->paginate($size);
+
+        foreach ($data as $row) $row->setVisible(['Oid','Code','Title', 'CountryName', 'CityName',]);
+        return $data;
+
+    }
+
+    public function index(Request $request)
+    {        
+        try {            
+            $user = Auth::user();
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);
+            $data = Attraction::limit(100)->get();
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    
+    public function show(Attraction $data)
+    {
+        try {            
+            $data = Attraction::with(['CountryObj','ItemObj'])->where('Oid',$data->Oid)->firstOrFail();
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function save(Request $request, $Oid = null)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+
+        try {            
+            if (!$Oid) $data = new Attraction();
+            else $data = Attraction::where('Oid',$Oid)->firstOrFail();
+            DB::transaction(function () use ($request, &$data) {
+                $disabled = ['Oid','LastUpdated','DateCreated','CreatedBy','LastUpdatedBy'];
+                foreach ($request as $field => $key) {
+                    if (in_array($field, $disabled)) continue;
+                    $data->{$field} = $request->{$field};
+                }
+
+                $data->save(); 
+                
+                $query = "INSERT INTO mstitemecommerce (Oid, Company, Item, ECommerce, IsActive)
+                    SELECT UUID(), i.Company,'".$data->Item."', i.Oid, 1
+                    FROM mstecommerce i 
+                    LEFT OUTER JOIN mstitemecommerce ie ON i.Oid = ie.ECommerce AND ie.Item = '".$data->Item."'
+                    WHERE ie.Oid IS NULL";
+
+                DB::insert($query);
+
+                if(!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}

@@ -1,0 +1,229 @@
+<?php
+
+namespace App\AdminApi\POS\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\POS\Entities\WalletBalance;
+use App\Core\POS\Resources\WalletBalanceResource;
+use App\Core\POS\Resources\WalletBalanceCollection;
+use App\Core\Internal\Entities\Status;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use Carbon\Carbon;
+use Validator;
+use App\Core\Security\Services\RoleModuleService;
+
+class WalletBalanceController extends Controller
+{
+    protected $roleService;
+    
+    public function __construct(
+        RoleModuleService $roleService  
+        )
+    {
+        $this->roleService = $roleService;
+    }
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Date');
+        $fields[] = serverSideConfigField('User');
+        $fields[] = serverSideConfigField('Currency');
+        $fields[] = ['w'=> 200, 'n'=>'DebetAmount'];
+        $fields[] = ['w'=> 200, 'n'=>'CreditAmount'];
+        $fields[] = serverSideConfigField('Status');
+        return $fields;
+    }
+
+    public function config(Request $request) {
+        return serverSideFields($this->fields());
+    }
+    public function list(Request $request) {
+        $fields = $this->fields();
+        $data = DB::table('poswalletbalance as data')
+            ->leftJoin('user AS u', 'u.Oid', '=', 'data.User')
+            ->leftJoin('mstcurrency AS c', 'c.Oid', '=', 'data.Currency')
+            ->leftJoin('sysstatus AS s', 's.Oid', '=', 'data.Status')
+            ->where('Type','Top-up');
+        $data = serverSideQuery($data, $fields, $request,'Date');
+        $role = $this->roleService->list('POSWalletBalance');
+        foreach($data as $row) $row->Action = $this->roleService->generateActionMaster($role);
+        return serverSideReturn($data, $fields);
+    }
+
+    public function index(Request $request)
+    {
+        try {            
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = WalletBalance::where('Type','Top-up')->whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);
+            if ($request->has('date') && $request->has('status')) {
+                $data = $data
+                    ->where('Date','>=', Carbon::parse($request->date)->startOfMonth()->toDateString())
+                    ->where('Date','<', Carbon::parse($request->date)->startOfMonth()->addMonths(1)->toDateString())
+                    ->where('Status',$request->status);
+            }
+            $data = $data->get();
+            return (new WalletBalanceCollection($data))->type($type);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function show(WalletBalance $data)
+    {
+        try {            
+            $data = WalletBalance::with('BusinessPartnerObj')->findOrFail($data->Oid);
+            return (new WalletBalanceResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+        $dataArray = object_to_array($request);
+        
+        $messsages = array(
+            'Code.required'=>__('_.Code').__('error.required'),
+            'Code.max'=>__('_.Code').__('error.max'),
+            'Status.required'=>__('_.Status').__('error.required'),
+            'Status.exists'=>__('_.Status').__('error.exists'),
+            'User.required'=>__('_.User').__('error.required'),
+            'User.exists'=>__('_.User').__('error.exists')
+
+        );
+        $rules = array(
+            'Code' => 'required|max:255',
+            'Status' => 'required|exists:sysstatus,Oid',
+            'User' => 'required|exists:user,Oid'
+        );
+
+        $validator = Validator::make($dataArray, $rules,$messsages);
+
+        if ($validator->fails()) {
+            return response()->json(
+                $validator->messages(),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        try {            
+            if (!$Oid) $data = new WalletBalance();
+            else $data = WalletBalance::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $company = Auth::user()->CompanyObj;
+                // $data->Company = Auth::user()->Company;
+                $data->Code = $request->Code == '<<Auto>>' ? now()->format('ymdHis').'-'.str_random(3) : $request->Code;
+                $data->Date = $request->Date;
+                $data->Type = $request->Type;
+                $data->User = $request->User ?: Auth::user()->Oid;
+                $data->BusinessPartner = $request->BusinessPartner;
+                $data->Currency = $request->Currency ?: $company->Currency;
+                $data->Status = $request->Status ?: Status::entry()->first()->Oid;
+                $data->DebetAmount = $request->DebetAmount;
+                $data->CreditAmount = $request->CreditAmount;
+                $data->Note = $request->Note;
+                $data->save();
+            });
+
+            $data = (new WalletBalanceResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(WalletBalance $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->delete();
+            });
+            
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function post(WalletBalance $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::posted()->first()->Oid;
+                $data->save();
+            });
+            
+            return response()->json(
+                $data, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function unpost(WalletBalance $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::entry()->first()->Oid;
+                $data->save();
+            });
+            
+            return response()->json(
+                $data, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function cancelled(WalletBalance $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::cancelled()->first()->Oid;
+                $data->save();
+            });
+            
+            return response()->json(
+                $data, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}
+            

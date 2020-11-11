@@ -1,0 +1,223 @@
+<?php
+
+namespace App\AdminApi\Trading\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Trading\Entities\PurchaseRequest;
+use App\Core\Trading\Entities\PurchaseRequestLog;
+use App\Core\Trading\Entities\PurchaseRequestDetail;
+use App\Core\Trading\Entities\PurchaseOrder;
+use App\Core\Trading\Entities\PurchaseOrderDetail;
+
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Base\Services\HttpService;
+use Carbon\Carbon;
+use App\Core\Accounting\Entities\Account;
+use App\Core\Internal\Entities\Status;
+use App\Core\Master\Entities\Department;
+
+
+class PurchaseRequestApprovalController extends Controller
+{
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Date');
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Department',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Requestor1',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Requestor2',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Status',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Purchaser',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'TruckingPrimeMover',];
+        return $fields;
+    }
+ 
+    public function config(Request $request) {
+        $fields = serverSideFields($this->fields());        
+        $fields[0]['cellRenderer'] = 'actionCell';
+        $fields[0]['topButton'] = [
+            [
+            'name' => 'Approved Purchase Request',
+            'icon' => 'CheckIcon',
+            'type' => 'open_form',
+            'url' => "purchaserequest/approved"
+            ]
+        ];
+        return $fields;
+    }
+
+    public function listApproval(Request $request)
+    {
+        $data = null;
+        try {
+            DB::transaction(function () use (&$data, $request) {
+                $user = Auth::user();
+                $query = "SELECT pr.Oid, pr.Code, pr.Date, d.name Department, m.Name Requestor1, m1.Name Requestor2, pr.PurchaseRequestStatus Status, 
+                    u.Name Purchaser,t.Name TruckingPrimeMover
+                    FROM trdpurchaserequest pr
+                    LEFT OUTER JOIN mstdepartment d ON pr.Department = d.Oid
+                    LEFT OUTER JOIN mstemployee m ON pr.Requestor1 = m.Oid
+                    LEFT OUTER JOIN mstemployee m1 ON pr.Requestor2 = m1.Oid
+                    LEFT OUTER JOIN mstemployee m2 ON pr.Requestor3 = m2.Oid
+                    LEFT OUTER JOIN user u ON pr.Purchaser = u.Oid
+                    LEFT OUTER JOIN trcprimemover t ON pr.TruckingPrimeMover = t.Oid
+                    WHERE ((pr.Approval1 = '". $user->Oid ."' AND pr.Approval1Date IS NULL)
+                    OR (pr.Approval2 = '". $user->Oid ."' AND pr.Approval1Date IS NOT NULL AND pr.Approval2Date IS NULL)
+                    OR (pr.Approval3 = '". $user->Oid ."' AND pr.Approval1Date IS NOT NULL AND pr.Approval2Date IS NOT NULL AND pr.Approval3Date IS NULL))
+                    AND PurchaseRequestStatus = 'Submit'
+                    ORDER BY pr.Date;";
+                $data = DB::select($query);
+                foreach($data as $row) {
+                    $tmp = PurchaseRequest::where('Oid',$row->Oid)->first();
+                    if (!$tmp) continue;
+                    $row->Action = $this->action($tmp);
+                    $row->Role = [
+                        'Open' => true,
+                        'Approve' => true,
+                        'Reject' => true,
+                    ];
+            }
+            });
+            return response()->json(
+                $data,
+                Response::HTTP_OK
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    
+    public function listApproved(Request $request)
+    {
+        $data = null;
+        try {
+            DB::transaction(function () use (&$data) {
+                $user = Auth::user();
+                $query = "SELECT pr.Oid, pr.Code, pr.Date, d.name Department, m.Name Requestor1, m1.Name Requestor2, pr.PurchaseRequestStatus Status, 
+                    u.Name Purchaser,t.Name TruckingPrimeMover, CASE WHEN pr.Approval1 = '". $user->Oid ."' THEN pr.Approval1Date  
+                    WHEN pr.Approval2 = '". $user->Oid ."' THEN pr.Approval2Date 
+                    WHEN pr.Approval3 = '". $user->Oid ."' THEN pr.Approval3Date END AS ApprovalDate
+                    FROM trdpurchaserequest pr
+                    LEFT OUTER JOIN mstdepartment d ON pr.Department = d.Oid
+                    LEFT OUTER JOIN mstemployee m ON pr.Requestor1 = m.Oid
+                    LEFT OUTER JOIN mstemployee m1 ON pr.Requestor2 = m1.Oid
+                    LEFT OUTER JOIN mstemployee m2 ON pr.Requestor3 = m2.Oid
+                    LEFT OUTER JOIN user u ON pr.Purchaser = u.Oid
+                    LEFT OUTER JOIN trcprimemover t ON pr.TruckingPrimeMover = t.Oid
+                    WHERE ((pr.Approval1 = '". $user->Oid ."' AND pr.Approval1Date IS NOT NULL)
+                    OR (pr.Approval2 = '". $user->Oid ."' AND pr.Approval2Date IS NOT NULL)
+                    OR (pr.Approval3 = '". $user->Oid ."' AND pr.Approval3Date IS NOT NULL))
+                    AND PurchaseRequestStatus IN ('Submit', 'Posted')
+                    ORDER BY 
+                    CASE WHEN pr.Approval1 = '". $user->Oid ."' THEN pr.Approval1Date  
+                    WHEN pr.Approval2 = '". $user->Oid ."' THEN pr.Approval2Date 
+                    WHEN pr.Approval3 = '". $user->Oid ."' THEN pr.Approval3Date END DESC LIMIT 30;";
+                $data = DB::select($query);
+                foreach($data as $row) {
+                    $tmp = PurchaseRequest::findOrFail($row->Oid);
+                    $row->Action = [
+                        [ 
+                        'name' => 'Open',
+                        'icon' => 'ArrowUpRightIcon',
+                        'type' => 'open_form',
+                        'url' => 'purchaserequest/form?item={Oid}',
+                        ]
+                    ];
+                    $row->Role = [
+                        'Open' => true
+                    ];
+            }
+            });
+            return response()->json(
+                $data,
+                Response::HTTP_OK
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+ 
+    public function configApproved(Request $request) { 
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Date');
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'ApprovalDate',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Department',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'Status',];
+        $fields[] = ['w'=> 250, 'r'=>0, 't'=>'text', 'n'=>'TruckingPrimeMover',];
+        $fields = serverSideFields($fields);        
+        $fields[0]['cellRenderer'] = 'actionCell';
+        return $fields;
+    }
+
+    public function action(PurchaseRequest $data) {
+        $url = 'purchaserequest';
+        $actionOpen = [ 
+            'name' => 'Open',
+            'icon' => 'ArrowUpRightIcon',
+            'type' => 'open_form',
+            'url' => $url.'/form?item={Oid}',
+        ];
+        $actionApprove = [
+            'name' => 'Approve',
+            'icon' => 'CheckCircleIcon',
+            'type' => 'global_form',
+            'form' => [
+              [ 'fieldToSave' => 'Note',
+                'type' => 'inputarea' ],
+            ],
+            'showModal' => false,
+            'post' => $url.'/{Oid}/approve',
+            'afterRequest' => 'apply'
+        ];
+        $actionReject = [
+            'name' => 'Reject',
+            'icon' => 'XCircleIcon',
+            'type' => 'global_form',
+            'form' => [
+              [ 'fieldToSave' => 'Note',
+                'type' => 'inputarea' ],
+            ],
+            'showModal' => false,
+            'post' => $url.'/{Oid}/reject',
+            'afterRequest' => 'apply'
+        ];
+        $return = [];
+        $return[] = $actionOpen;
+        $return[] = $actionApprove;
+        $return[] = $actionReject;
+        return $return;
+        // switch ($data->PurchaseRequestStatus) {
+        //     case "":
+        //         $return[] = $actionSubmit;
+        //         break;
+        //     case "Entry":
+        //         $return[] = $actionSubmit;
+        //         break;          
+        //     case "Submit":
+        //         $return[] = $actionEntry;
+        //         break;          
+        //     case "Posted":
+        //         $return[] = $actionOpen;
+        //         $return[] = $actionApprove;
+        //         $return[] = $actionReject;
+        //         break;
+        // }
+        // return $return;
+    }
+
+}

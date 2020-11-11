@@ -1,0 +1,304 @@
+<?php
+
+namespace App\AdminApi\Trading\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Trading\Entities\StockTransfer;
+use App\Core\Trading\Entities\StockTransferDetail;
+use App\Core\Internal\Entities\Status;
+use App\Core\Trading\Resources\StockTransferResource;
+use App\Core\Trading\Resources\StockTransferCollection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Core\Accounting\Services\StockTransferService;
+use App\Core\Security\Services\RoleModuleService;
+use Carbon\Carbon;
+use Validator;
+
+class StockTransferController extends Controller
+{
+    protected $stockTransferService;
+    protected $roleService;
+    
+    public function __construct(
+        StockTransferService $stockTransferService,
+        RoleModuleService $roleService  
+        )
+    {
+        $this->stockTransferService = $stockTransferService;
+        $this->roleService = $roleService;
+    }
+    public function fields() {    
+        $fields = []; //f = 'FIELD, t = TITLE
+        $fields[] = serverSideConfigField('Oid');
+        $fields[] = serverSideConfigField('Code');
+        $fields[] = serverSideConfigField('Date');
+        $fields[] = serverSideConfigField('User');
+        $fields[] = ['w'=> 180, 'n'=>'From', 'f'=>'wf.Name'];
+        $fields[] = ['w'=> 90,  'n'=>'To', 'f'=>'wt.Name'];
+        $fields[] = serverSideConfigField('Status');
+        return $fields;
+    }
+
+    public function config(Request $request) {
+        $fields = serverSideFields($this->fields());
+        foreach ($fields as &$row) { //combosource
+            // if ($row['headerName'] == 'AccountGroup') $row['source'] = comboSelect('accaccountgroup');
+        }
+        return $fields;
+    }
+    public function list(Request $request) {
+        $fields = $this->fields();        
+        $data = DB::table('trdstocktransfer as data')
+            ->leftJoin('user AS u', 'u.Oid', '=', 'data.User')
+            ->leftJoin('mstwarehouse AS wf', 'wf.Oid', '=', 'data.WarehouseFrom')
+            ->leftJoin('mstwarehouse AS wt', 'wt.Oid', '=', 'data.WarehouseTo')
+            ->leftJoin('sysstatus AS s', 's.Oid', '=', 'data.Status')
+        ;
+        $data = serverSideQuery($data, $fields, $request,'Date');
+        $role = $this->roleService->list('StockTransfer');
+        $action = $this->roleService->action('StockTransfer');
+        foreach($data as $row) $row->Role = $this->roleService->GenerateRole($row, $role, $action);
+        return serverSideReturn($data, $fields);
+    }
+
+    public function index(Request $request, $Oid = null)
+    {
+        try {            
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = StockTransfer::whereNull('GCRecord');
+            if ($user->BusinessPartner) $data = $data->where('Code', $user->BusinessPartner);
+            if ($type == 'list') $data->with(['WarehouseFromObj','WarehouseToObj','UserObj','StatusObj']);
+            if ($request->has('date')) {
+                $data = $data
+                    ->where('Date','>=', Carbon::parse($request->date)->startOfMonth()->toDateString())
+                    ->where('Date','<', Carbon::parse($request->date)->startOfMonth()->addMonths(1)->toDateString());
+            }
+            $data = $data->get();
+            
+            $result = [];
+            $role = $this->roleService->list('StockTransfer');
+            $action = $this->roleService->action('StockTransfer');
+            foreach ($data as $row) {
+                $result[] = [
+                    'Oid' => $row->Oid,
+                    'Code' => $row->Code,
+                    'Date' => Carbon::parse($row->Date)->format('Y-m-d'),
+                    'WarehouseFromName' => $row->WarehouseFromObj ? $row->WarehouseFromObj->Code : null,
+                    'WarehouseToName' => $row->WarehouseToObj ? $row->WarehouseToObj->Code : null,
+                    'UserName' => $row->UserObj ? $row->UserObj->UserName : null,
+                    'StatusName' => $row->StatusObj ? $row->StatusObj->Name : null,
+                    'Role' => $this->GenerateRole($row, $role, $action)
+                ];
+            }
+            return $result;
+            // return (new StockTransferCollection($data))->type($type);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function show(StockTransfer $data)
+    {
+        try {            
+            $data = StockTransfer::with(['Details'])->with([
+                'WarehouseFromObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'WarehouseToObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'Details.ItemObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},
+                'Details.ItemUnitObj' => function ($query) {$query->addSelect('Oid', 'Code','Name');},               
+            ])->findOrFail($data->Oid);
+            $data->Role = $this->generateRole($data);
+            return (new StockTransferResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+        $dataArray = object_to_array($request);
+        
+        $messsages = array(
+            'Code.required'=>__('_.Code').__('error.required'),
+            'Code.max'=>__('_.Code').__('error.max'),
+            'Date.required'=>__('_.Date').__('error.required'),
+            'Date.date'=>__('_.Date').__('error.date'),
+            'Status.required'=>__('_.Status').__('error.required'),
+            'Status.exists'=>__('_.Status').__('error.exists'),
+            'WarehouseFrom.required'=>__('_.WarehouseFrom').__('error.required'),
+            'WarehouseFrom.exists'=>__('_.WarehouseFrom').__('error.exists'),
+            'WarehouseTo.required'=>__('_.WarehouseTo').__('error.required'),
+            'WarehouseTo.exists'=>__('_.WarehouseTo').__('error.exists'),
+        );
+        $rules = array(
+            'Code' => 'required|max:255',
+            'Date' => 'required|date',
+            'Status' => 'required|exists:sysstatus,Oid',
+            'WarehouseFrom' => 'required|exists:mstwarehouse,Oid',
+            'WarehouseTo' => 'required|exists:mstwarehouse,Oid',
+        );
+
+        $validator = Validator::make($dataArray, $rules,$messsages);
+
+        if ($validator->fails()) {
+            return response()->json(
+                $validator->messages(),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        try {            
+            DB::transaction(function () use ($request, $Oid, &$data) {
+                if (!$Oid) $data = new StockTransfer();
+                else $data = StockTransfer::findOrFail($Oid);
+
+                // $data->Company = Auth::user()->Company;
+                $data->Code = $request->Code == '<<Auto>>' ? now()->format('ymdHis').'-'.str_random(3) : $request->Code;
+                $data->Date = $request->Date;
+                $data->User = $request->User ?: Auth::user()->Oid;
+                $data->WarehouseFrom = $request->WarehouseFrom;
+                $data->WarehouseTo = $request->WarehouseTo;
+                $data->Note = $request->Note;
+                $data->Status = $request->Status ?: Status::entry()->first()->Oid;
+                $data->save();
+
+                if ($data->Details()->count() != 0) {
+                    foreach ($data->Details as $rowdb) {
+                        $found = false;               
+                        foreach ($request->Details as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = StockTransferDetail::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->Details) {
+                    $details = [];
+                    foreach ($request->Details as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = StockTransferDetail::findOrFail($row->Oid);
+                            $detail->Item = $row->Item;
+                            $detail->ItemUnit = $row->ItemUnit;
+                            $detail->Quantity = $row->Quantity;
+                            $detail->save();
+                        } else {
+                            $details[] = new StockTransferDetail([
+                                'Item' => $row->Item,
+                                'ItemUnit' => $row->ItemUnit,
+                                'Quantity' => $row->Quantity
+                            ]);
+                        }
+                    }
+                    $data->Details()->saveMany($details);
+                }            
+                $data->save();
+                $data->load('Details');
+                $data->fresh();
+                
+                $data->WarehouseFromName = $data->WarehouseFromObj->Code;
+                $data->WarehouseToName = $data->WarehouseToObj->Code;
+                $data->UserName = $data->UserObj->Name;
+                $data->StatusName = $data->StatusObj->Name;
+                $data->Role = $this->generateRole($data);
+            });
+            
+            // $data = (new StockTransferResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            )->header('Location', route('AdminApi\StockTransfer::show', ['data' => $data->Oid]));
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(StockTransfer $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->Details()->delete();
+                $data->delete();
+            });
+            
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    
+
+    public function post(StockTransfer $data)
+    {
+        try {            
+            logger('controller');
+            $this->stockTransferService->post($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    public function unpost(StockTransfer $data)
+    {
+        try {            
+            $this->stockTransferService->unpost($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    public function cancelled(StockTransfer $data)
+    {
+        try {            
+            $this->stockTransferService->cancelled($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    private function generateRole(StockTransfer $row, $role = null, $action = null) {
+        if (!$role) $role = $this->roleService->list('StockTransfer');
+        if (!$action) $action = $this->roleService->action('StockTransfer');
+
+        return [
+            'IsRead' => $role->IsRead,
+            'IsAdd' => $role->IsAdd,
+            'IsEdit' => $this->roleService->isAllowDelete($row->StatusObj, $role->IsEdit),
+            'IsDelete' => 0, //$this->roleService->isAllowDelete($row->StatusObj, $role->IsDelete),
+            'Cancel' => $this->roleService->isAllowCancel($row->StatusObj, $action->Cancel),
+            'Entry' => $this->roleService->isAllowEntry($row->StatusObj, $action->Entry),
+            'Post' => $this->roleService->isAllowPost($row->StatusObj, $action->Posted),
+            'ViewStock' => $this->roleService->isPosted($row->StatusObj, 1),
+        ];
+    }
+}
+            

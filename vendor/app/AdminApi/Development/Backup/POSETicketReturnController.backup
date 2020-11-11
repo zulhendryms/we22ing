@@ -1,0 +1,248 @@
+<?php
+
+namespace App\AdminApi\POS\Controllers;
+
+use Validator;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\PointOfSale\Entities\POSETicketReturn;
+use App\Core\PointOfSale\Entities\POSETicketReturnDetail;
+use App\Core\POS\Entities\ETicket;
+use App\Core\Internal\Entities\Status;
+use App\Core\Security\Services\RoleModuleService;
+use App\Core\Base\Services\HttpService;
+
+class POSETicketReturnController extends Controller
+{
+    private $httpService;
+    protected $roleService;
+    public function __construct(RoleModuleService $roleService, HttpService $httpService)
+    {
+        $this->roleService = $roleService;
+        $this->httpService = $httpService;
+        $this->httpService->baseUrl('http://api1.ezbooking.co:888')->json();
+    }
+
+    public function config(Request $request)
+    {
+        $fields = $this->httpService->get('/portal/api/development/table/vuelist?code=POSETicketReturn');
+        foreach ($fields as &$row) { //combosource
+            if ($row->headerName == 'User') $row->source = comboselect('user');
+            elseif ($row->headerName == 'Status') $row->source = comboselect('sysstatus');
+        };
+        return $fields;
+    }
+
+    public function list(Request $request)
+    {
+        $fields = $this->httpService->get('/portal/api/development/table/vuelist?code=POSETicketReturn');
+        $data = DB::table('poseticketreturn as data') //jointable
+
+            ->leftJoin('user AS User', 'User.Oid', '=', 'data.User')
+            ->leftJoin('pospointofsale AS PointOfSale', 'PointOfSale.Oid', '=', 'data.PointOfSale')
+            ->leftJoin('sysstatus AS Status', 'Status.Oid', '=', 'data.Status');
+        $data = serverSideQueryJSon($data, $fields, $request, 'poseticketreturn', 'Name');
+        $role = $this->roleService->list('POSETicketReturn'); //rolepermission
+        foreach ($data as $row) $row->Role = $this->roleService->generateRoleMasterCopy($role);
+        return serverSideReturn($data, $fields);
+    }
+
+
+    public function index(Request $request)
+    {
+        try {
+            $user = Auth::user();
+            $type = $request->input('type') ?: 'combo';
+            $data = POSETicketReturn::whereNull('GCRecord');
+
+            $data = $data->orderBy('Oid')->get();
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    private function showSub($Oid)
+    {
+        $data = POSETicketReturn::with('Details')->findOrFail($Oid);
+
+        $data->UserName = $data->UserObj ? $data->UserObj->Name : null;
+        $data->PointOfSaleName = $data->PointOfSaleObj ? $data->PointOfSaleObj->Name : null;
+        $data->StatusName = $data->StatusObj ? $data->StatusObj->Name : null;
+
+
+        foreach ($data->Details as $row) {
+
+            $row->ItemName = $row->ItemObj ? $row->ItemObj->Name : null;
+            $row->TravelTransactionDetailName = $row->TravelTransactionDetailObj ? $row->TravelTransactionDetailObj->Name : null;
+            $row->POSETicketName = $row->POSETicketObj ? $row->POSETicketObj->Name : null;
+        }
+
+        return $data;
+    }
+
+    public function show(POSETicketReturn $data)
+    {
+        try {
+            return $this->showSub($data->Oid);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function save(Request $request, $Oid = null)
+    {
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))));
+
+
+        try {
+            if (!$Oid) $data = new POSETicketReturn();
+            else $data = POSETicketReturn::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                $disabled = array_merge(disabledFieldsForEdit(), ['UserName', 'UserObj', 'PointOfSaleName', 'PointOfSaleObj', 'StatusName', 'StatusObj', 'Details']);;
+                $data = serverSideSave($data, $request, $disabled);
+
+                $data->save();
+
+
+
+                if (isset($request->Details)) {
+                    $disabled = array_merge(disabledFieldsForEdit(), ['ItemName', 'ItemObj', 'TravelTransactionDetailName', 'TravelTransactionDetailObj', 'POSETicketName', 'POSETicketObj']);;
+
+                    serverSideDeleteDetail($data->Details, $request->Details);
+                    foreach ($request->Details as $row) {
+                        if (isset($row->Oid)) $detail = POSETicketReturnDetail::findOrFail($row->Oid);
+                        else $detail = new POSETicketReturnDetail();
+                        $detail->Company = $data->Company;
+                        $detail->POSETicketReturn = $data->Oid;
+                        $detail = serverSideSave($detail, $row, $disabled);
+                        $detail->save();
+                    }
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if (!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $role = $this->roleService->list('POSETicketReturn'); //rolepermission
+            $data = $this->showSub($data->Oid);
+            $data->Role = $this->roleService->generateRoleMasterCopy($role);
+            return response()->json(
+                $data,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function eticketSearch(Request $request)
+    {
+        $query = "SELECT 
+                pt.Oid, CONCAT(i.Name,' - ',i.Code) AS Name
+                FROM poseticket pt
+                LEFT OUTER JOIN mstitem i ON pt.Item = i.Oid
+                WHERE pt.GCRecord IS NULL
+                AND pt.PointOfSale ='{$request->input('pointofsale')}'
+                ";
+        $data = DB::select($query);
+        return response()->json(
+            $data,
+            Response::HTTP_OK
+        );
+    }
+
+    public function eticketAdd(Request $request)
+    {
+        try {
+            $result = [];
+            DB::transaction(function () use ($request, &$result) {
+                $eTicketReturn = POSETicketReturn::findOrFail($request->input('oid'));
+                $query = "SELECT pt.*, i.Name AS Items
+                        FROM poseticket pt
+                        LEFT OUTER JOIN mstitem i ON pt.Item = i.Oid
+                        WHERE pt.GCRecord IS NULL AND pt.PointOfSale = '{$request->input('pointofsale')}'
+                    ";
+                $data = DB::select($query);
+                foreach ($data as $row) {
+                    $poseticket = ETicket::findOrFail($row->Oid);
+                    $details = new POSETicketReturnDetail();
+                    $details->POSETicketReturn = $eTicketReturn->Oid;
+                    $details->POSETicket = $poseticket->Oid;
+                    $details->Item = $poseticket->Item;
+                    $details->save();
+                    $details->ItemObj = $poseticket->ItemObj;
+
+                    $result[] = $details;
+                }
+            });
+
+            return response()->json(
+                $result,
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function statusPost(POSETicketReturn $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->Status = Status::where('Code', 'Posted')->first()->Oid;
+                $data->save();
+
+                foreach ($data as $row) {
+                    $row->PointOfSale = null;
+                    $row->Status = Status::posted()->first()->Oid;
+                    $row->save();
+                }
+            });
+
+            return response()->json(
+                $data,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(POSETicketReturn $data)
+    {
+        try {
+            DB::transaction(function () use ($data) {
+                $data->delete();
+            });
+            return response()->json(
+                null,
+                Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}

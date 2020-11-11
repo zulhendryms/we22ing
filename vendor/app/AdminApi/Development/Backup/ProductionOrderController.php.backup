@@ -1,0 +1,323 @@
+<?php
+
+namespace App\AdminApi\Production\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Production\Entities\ProductionOrder;
+use App\Core\Production\Entities\ProductionOrderDetail;
+use App\Core\Production\Entities\ProductionOrderItem;
+use App\Core\Production\Entities\ProductionOrderItemDetail;
+use App\Core\Production\Entities\ProductionOrderItemProcess;
+use App\Core\Production\Resources\ProductionOrderResource;
+use App\Core\Production\Resources\ProductionOrderItemResource;
+use App\Core\Production\Resources\ProductionOrderCollection;
+use Illuminate\Support\Facades\DB;
+use Validator;
+
+class ProductionOrderController extends Controller
+{
+    public function index(Request $request)
+    {        
+        try {            
+            $type = $request->input('type') ?: 'combo';
+            $data = ProductionOrder::whereNull('GCRecord');
+            $data = $data
+            ->get();
+            return (new ProductionOrderCollection($data))->type($type);
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+    
+    public function show(ProductionOrder $data)
+    {
+        try {            
+            $data = ProductionOrder::with(['Details','Items'])->findOrFail($data->Oid);
+            return $data;
+            // return (new ProductionOrderResource($data))->type('detail');
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function save(Request $request, $Oid = null)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+        $dataArray = object_to_array($request);
+        $messsages = array(
+            'Code.required'=>__('_.Code').__('error.required'),
+            'Code.max'=>__('_.Code').__('error.max'),
+            'Customer.required'=>__('_.Customer').__('error.required'),
+            'Customer.exists'=>__('_.Customer').__('error.exists'),
+            'Status.required'=>__('_.Status').__('error.required'),
+            'Status.exists'=>__('_.Status').__('error.exists'),
+        );
+        $rules = array(
+            'Code' => 'required|max:255',
+            'Customer' => 'required|exists:mstbusinesspartner,Oid',
+            'Status' => 'required|exists:sysstatus,Oid',
+        );
+
+        $validator = Validator::make($dataArray, $rules,$messsages);
+
+        if ($validator->fails()) {
+            return response()->json(
+                $validator->messages(),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+
+        try {            
+            if (!$Oid) $data = new ProductionOrder();
+            else $data = ProductionOrder::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                if ($request->Code == '<<Auto>>') $request->Code = now()->format('ymdHis').'-'.str_random(3);
+                $disabled = ['Oid','Details','Items','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                foreach ($request as $field => $key) {
+                    if (in_array($field, $disabled)) continue;
+                    $data->{$field} = $request->{$field};
+                }
+                $data->save();        
+
+                if ($data->Details()->count() != 0) {
+                    foreach ($data->Details as $rowdb) {
+                        $found = false;               
+                        foreach ($request->Details as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = ProductionOrderDetail::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->Details) {
+                    $details = [];  
+                    $disabled = ['Oid','ProductionOrder','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                    foreach ($request->Details as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = ProductionOrderDetail::findOrFail($row->Oid);
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;
+                                $detail->{$field} = $row->{$field};
+                            }
+                            $detail->save();
+                        } else {
+                            $arr = [];
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;                            
+                                $arr = array_merge($arr, [
+                                    $field => $row->{$field},
+                                ]);
+                            }
+                            $details[] = new ProductionOrderDetail($arr);
+                        }
+                    }
+                    $data->Details()->saveMany($details);
+                    $data->load('Details');
+                    $data->fresh();
+                }
+
+                if ($data->Items()->count() != 0) {
+                    foreach ($data->Items as $rowdb) {
+                        $found = false;               
+                        foreach ($request->Items as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = ProductionOrderItem::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->Items) {
+                    $details = [];  
+                    $disabled = ['Oid','ProductionOrder','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                    foreach ($request->Items as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = ProductionOrderItem::findOrFail($row->Oid);
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;
+                                $detail->{$field} = $row->{$field};
+                            }
+                            $detail->save();
+                        } else {
+                            $arr = [];
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;                            
+                                $arr = array_merge($arr, [
+                                    $field => $row->{$field},
+                                ]);
+                            }
+                            $details[] = new ProductionOrderItem($arr);
+                        }
+                    }
+                    $data->Items()->saveMany($details);
+                    $data->load('Items');
+                    $data->fresh();
+                }
+
+                if(!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $data = (new ProductionOrderResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function viewOrderItem($Oid = null)
+    {
+        try {            
+            $data = ProductionOrderItem::with(['OrderItemDetails','OrderItemProcess'])->findOrFail($Oid);
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function saveOrderItem(Request $request, $Oid = null)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+
+        try {            
+            $data = ProductionOrderItem::findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {   
+                if ($data->OrderItemDetails()->count() != 0) {
+                    foreach ($data->OrderItemDetails as $rowdb) {
+                        $found = false;               
+                        foreach ($request->OrderItemDetails as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = ProductionOrderItemDetail::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->OrderItemDetails) {
+                    $details = [];  
+                    $disabled = ['Oid','ProductionOrderItem','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                    foreach ($request->OrderItemDetails as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = ProductionOrderItemDetail::findOrFail($row->Oid);
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;
+                                $detail->{$field} = $row->{$field};
+                            }
+                            $detail->save();
+                        } else {
+                            $arr = [];
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;                            
+                                $arr = array_merge($arr, [
+                                    $field => $row->{$field},
+                                ]);
+                            }
+                            $details[] = new ProductionOrderItemDetail($arr);
+                        }
+                    }
+                    $data->OrderItemDetails()->saveMany($details);
+                    $data->load('OrderItemDetails');
+                    $data->fresh();
+                }
+
+                if ($data->OrderItemProcess()->count() != 0) {
+                    foreach ($data->OrderItemProcess as $rowdb) {
+                        $found = false;               
+                        foreach ($request->OrderItemProcess as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = ProductionOrderItemProcess::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->OrderItemProcess) {
+                    $details = [];  
+                    $disabled = ['Oid','ProductionOrderItem','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                    foreach ($request->OrderItemProcess as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = ProductionOrderItemProcess::findOrFail($row->Oid);
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;
+                                $detail->{$field} = $row->{$field};
+                            }
+                            $detail->save();
+                        } else {
+                            $arr = [];
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;                            
+                                $arr = array_merge($arr, [
+                                    $field => $row->{$field},
+                                ]);
+                            }
+                            $details[] = new ProductionOrderItemProcess($arr);
+                        }
+                    }
+                    $data->OrderItemProcess()->saveMany($details);
+                    $data->load('OrderItemProcess');
+                    $data->fresh();
+                }
+
+                if(!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            $data = (new ProductionOrderItemResource($data))->type('detail');
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(ProductionOrder $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->Details()->delete();
+                $data->Items()->delete();
+                $data->delete();
+            });
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}

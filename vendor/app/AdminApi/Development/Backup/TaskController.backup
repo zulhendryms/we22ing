@@ -1,0 +1,374 @@
+<?php
+
+namespace App\AdminApi\Collaboration\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+
+use App\Laravel\Http\Controllers\Controller;
+use App\Core\Collaboration\Entities\Task;
+use App\Core\Collaboration\Entities\TaskProject;
+use App\Core\Collaboration\Entities\TaskLog;
+use App\Core\Master\Entities\Project;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use App\Core\Internal\Services\FileCloudService;
+use Validator;
+
+class TaskController extends Controller
+{
+    protected $fileCloudService;
+
+    public function __construct(FileCloudService $fileCloudService)
+    {
+        $this->fileCloudService = $fileCloudService;
+    }
+    public function index(Request $request)
+    {
+        try {        
+            $data1 = Task::with('Projects','Projects.ProjectObj')->with([
+                'User1Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'User2Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'User3Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'CreatedByObj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                ])->limit(40)->whereNull('GCRecord');        
+            $data2 = Task::with('Projects','Projects.ProjectObj')->with([
+                'User1Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'User2Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'User3Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'CreatedByObj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                ])->limit(10)->whereNull('GCRecord');
+            if ($request->has('User1')) { 
+                $data1->whereIn('User1',$request->query('User1')); 
+                $data2->whereIn('User2',$request->query('User1')); 
+            }
+            if ($request->has('Status')) {
+                switch ($request->query('Status')) {
+                    case "Working":
+                        $data1->whereNull('ActualEnd')->where('IsStar',0);
+                        $data2->whereNull('ActualEnd')->where('IsStar',0);
+                        break;
+                    case "Complete":
+                        $data1->whereNotNull('ActualEnd');
+                        $data2->whereNotNull('ActualEnd');
+                        break;
+                    case "Starred":
+                        $data1->whereNull('ActualEnd')->where('IsStar',1);
+                        $data2->whereNull('ActualEnd')->where('IsStar',1);
+                        break;
+                }
+            }
+            if ($request->has('Tags')) {
+                $tags = $request->input('Tags');
+                $data1->whereHas('Projects', function ($query) use ($tags) {
+                    $query->whereIn('Project', $tags);
+                });
+                $data2->whereHas('Projects', function ($query) use ($tags) {
+                    $query->whereIn('Project', $tags);
+                });
+            }
+            $data1 = $data1->orderBy('IsImportant','Desc')->orderBy('CreatedAt','Desc')->get();
+            $data2 = $data2->orderBy('IsImportant','Desc')->orderBy('CreatedAt','Desc')->get();
+            foreach($data1 as $row) {
+                $arr = [];
+                foreach($row->Projects as $detail) if ($detail->Project) $arr[] = $detail->ProjectObj->Name;
+                unset($row->Projects); 
+                $row->Tags = $arr;
+                $row->IsCompleted = $row->ActualEnd != null;
+            }
+            foreach($data2 as $row) {
+                $arr = [];
+                foreach($row->Projects as $detail) if ($detail->Project) $arr[] = $detail->ProjectObj->Name;
+                unset($row->Projects); 
+                $row->Tags = $arr;
+                $row->IsCompleted = $row->ActualEnd != null;
+            }
+            $result = $data1->merge($data2);
+            return $result;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+        
+    }
+    
+    public function show(Task $data)
+    {
+        try {            
+            $data = Task::with(['Projects','Projects.ProjectObj','User1Obj','User2Obj','User3Obj','Logs','Logs.User1Obj'])->findOrFail($data->Oid);
+            return $data;
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_NOT_FOUND
+            );
+        }
+    }
+
+    public function save(Request $request, $Oid = null)
+    {        
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+
+        try {            
+            if (!$Oid) $data = new Task();
+            else $data = Task::with('Projects','Projects.ProjectObj','User1Obj','User2Obj','User3Obj','CreatedByObj')->findOrFail($Oid);
+            DB::transaction(function () use ($request, &$data) {
+                if (isset($request->User1)) if ($request->User1 == '') $request->User1 = null;
+                if (isset($request->User2)) if ($request->User2 == '') $request->User2 = null;
+                if (isset($request->User3)) if ($request->User3 == '') $request->User3 = null;
+                $disabled = ['Oid','HistoryLog','Projects','GCRecord','OptimisticLock','Image1','Image2','Image3','Image4','Image5','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                foreach ($request as $field => $key) {
+                    if (in_array($field, $disabled)) continue;
+                    $data->{$field} = $request->{$field};
+                }
+                // $data->CreatedBy = 'Completed';
+                if ($data->ActualDateEnd != null) $data->Status = 'Completed';
+                elseif ($data->ActualDateStart != null) $data->Status = 'Started';
+                else $data->Status = 'Entry';
+                if (isset($request->Image1)) if (isset($request->Image1->base64)) $data->Image1 = $this->fileCloudService->uploadImage($request->Image1, $data->Image1);
+                if (isset($request->Image2)) if (isset($request->Image2->base64)) $data->Image2 = $this->fileCloudService->uploadImage($request->Image2, $data->Image2);
+                if (isset($request->Image3)) if (isset($request->Image3->base64)) $data->Image3 = $this->fileCloudService->uploadImage($request->Image3, $data->Image3);
+                if (isset($request->Image4)) if (isset($request->Image4->base64)) $data->Image4 = $this->fileCloudService->uploadImage($request->Image4, $data->Image4);
+                if (isset($request->Image5)) if (isset($request->Image5->base64)) $data->Image5 = $this->fileCloudService->uploadImage($request->Image5, $data->Image5);
+                
+                $data->save();        
+
+                if ($data->Projects()->count() != 0) {
+                    foreach ($data->Projects as $rowdb) {
+                        $found = false;               
+                        foreach ($request->Projects as $rowapi) {
+                            if (isset($rowapi->Oid)) {
+                                if ($rowdb->Oid == $rowapi->Oid) $found = true;
+                            }
+                        }
+                        if (!$found) {
+                            $detail = TaskProject::findOrFail($rowdb->Oid);
+                            $detail->delete();
+                        }
+                    }
+                }
+                if($request->Projects) {
+                    $details = [];  
+                    $disabled = ['Oid','Task','GCRecord','OptimisticLock','CreatedAt','UpdatedAt','CreatedAtUTC','UpdatedAtUTC','CreatedBy','UpdatedBy'];
+                    foreach ($request->Projects as $row) {
+                        if (isset($row->Oid)) {
+                            $detail = TaskProject::findOrFail($row->Oid);
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;
+                                $detail->{$field} = $row->{$field};
+                            }
+                            $detail->save();
+                        } else {
+                            $arr = [];
+                            foreach ($row as $field => $key) {
+                                if (in_array($field, $disabled)) continue;                            
+                                $arr = array_merge($arr, [
+                                    $field => $row->{$field},
+                                ]);
+                            }
+                            $details[] = new TaskProject($arr);
+                        }
+                    }
+                    $data->Projects()->saveMany($details);
+                    $data->load('Projects');
+                    
+                    $data = Task::with('Projects','Projects.ProjectObj','User1Obj','User2Obj','User3Obj','Logs','Logs.User1Obj')->findOrFail($data->Oid);
+                    $data->fresh();
+                }
+                $this->taskLog($data, "Updated");
+                if(!$data) throw new \Exception('Data is failed to be saved');
+            });
+
+            return response()->json(
+                $data, Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+
+    public function destroy(Task $data)
+    {
+        try {            
+            DB::transaction(function () use ($data) {
+                $data->Projects()->delete();
+                $data->delete();
+            });
+            return response()->json(
+                null, Response::HTTP_NO_CONTENT
+            );
+
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    
+    public function statusStart(Task $data)
+    {
+        try {
+            DB::transaction(function () use (&$data) {
+                $data->ActualStart = now()->addHours(company_timezone())->toDateTimeString();
+                $data->Status = 'Started';
+                $data->save();
+            });
+            $data = Task::findOrFail($data->Oid);
+            $this->taskLog($data, "started");
+            return $data;
+            // return response()->json(
+            //     $data, Response::HTTP_NO_CONTENT
+            // );
+
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    private function taskLog(Task $data, $description) {
+        // $log = new TaskLog();
+        // $log->Task = $data->Oid;
+        // $log->User1 = Auth::user()->Oid;
+        // $log->Description = $description;
+        // $log->save();
+        $user = Auth::user()->Name;
+        $data->HistoryLog = $data->HistoryLog.PHP_EOL.$user.': '.$description.' - '.now();
+        $data->save();
+    }
+    
+    public function statusEnd(Task $data)
+    {
+        try {            
+            DB::transaction(function () use (&$data) {
+                $this->taskLog($data, "ended from ".($data->UserObj ? $data->UserObj->Name : "")." to ".($data->User2Obj ? $data->User2Obj->Name : ""));
+                
+                if ($data->User2) {
+                    $user = Auth::user();
+                    $arr = [
+                        "Oid" => "UUID()",
+                        "Company" => "'".$data->Company."'",
+                        "IsStar" => 0,
+                        "IsImportant" => 0,
+                        "Status" => "'Entry'",
+                        "Title" => "'".$data->Title."'",
+                        "Description" => "'".$data->Description."'",
+                        "Image1" => $data->Image1 ? "'".$data->Image1."'" : 'null',
+                        "User1" => "'".$data->User2."'",
+                        "User2" => $data->User3 ? "'".$data->User3."'" : "null",
+                        "TaskReference" => "'".($data->Oid)."'",
+                        "CreatedAt" => "'".now()."'",
+                        "UpdatedAt" => "'".now()."'",
+                        "CreatedBy" => "'".$user->Oid."'",
+                        "UpdatedBy" => "'".$user->Oid."'",
+                        "EstimatedStart" => "'".now()."'",
+                        "EstimatedEnd" => "null",
+                        "ActualStart" => "null",
+                        "ActualEnd" => "null",
+                        "EstimatedDurationDay" => "null",
+                        "EstimatedDurationHour" => "1",
+                    ];
+                    // $arr = array_merge($arr, $this->arrInsertField($data, $request->User1));
+                    $query = "INSERT INTO coltask (%s) SELECT %s FROM coltask WHERE Oid = '{$data->Oid}'";
+                    $query = sprintf($query, implode(',', array_keys($arr)), implode(',', $arr));
+                    // dd($query);
+                    DB::insert($query);
+                }
+
+                $data->ActualEnd = now()->addHours(company_timezone())->toDateTimeString();
+                if ($data->ActualStart == null) $data->ActualStart = $data->ActualEnd;
+                $hours = floor((strtotime($data->ActualEnd) - strtotime($data->ActualStart))/60/60);
+                $hours = $hours > 0 ? $hours : 1;
+                $days = $hours > 8 ? floor($hours/8) : 0;
+                $hours = $days > 0 ? $days % 8 : $hours;
+                $data->ActualDurationDay = $days;
+                $data->ActualDurationHour = $hours;
+                $data->Status = 'Completed';
+                $data->save();
+            });
+            $data = Task::findOrFail($data->Oid);
+            return $data;
+
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+    
+    public function statusEndTo(Request $request, Task $data)
+    {
+        return null;
+        $request = json_decode(json_encode(object_to_array(json_decode($request->getContent()))))   ; //WILLIAM ZEF
+        try {            
+            DB::transaction(function () use (&$data, $request) {  
+                $user = Auth::user();
+                // $disabled = array_merge(disabledFieldsForEdit(), ['Oid','User','CreatedAt','CreatedBy','UpdatedAt','UpdatedBy','EstimatedStart','EstimatedEnd','EstimatedDurationDay','EstimatedDurationHour','TaskReference','ActualStart','ActualEnd']);
+                // $arr = queryInsertFromFields2($data, $disabled);
+                
+                $arr = [
+                    "Oid" => "UUID()",
+                    "Company" => "'".$data->Company."'",
+                    "IsStar" => 0,
+                    "IsImportant" => 0,
+                    "Status" => "'Entry'",
+                    "Title" => "'".$data->Title."'",
+                    "Description" => "'".$data->Description."'",
+                    "Image1" => $data->Image1 ? "'".$data->Image1."'" : 'null',
+                    "User1" => "'".$request->User1."'",
+                    "User2" => "'".$data->User3."'",
+                    "TaskReference" => "'".($data->Oid)."'",
+                    "CreatedAt" => "'".now()."'",
+                    "UpdatedAt" => "'".now()."'",
+                    "CreatedBy" => "'".$user->Oid."'",
+                    "UpdatedBy" => "'".$user->Oid."'",
+                    "EstimatedStart" => "'".now()."'",
+                    "EstimatedEnd" => "null",
+                    "ActualStart" => "null",
+                    "ActualEnd" => "null",
+                    "EstimatedDurationDay" => "null",
+                    "EstimatedDurationHour" => "1",
+                ];
+                // $arr = array_merge($arr, $this->arrInsertField($data, $request->User1));
+                $query = "INSERT INTO coltask (%s) SELECT %s FROM coltask WHERE Oid = '{$data->Oid}'";
+                $query = sprintf($query, implode(',', array_keys($arr)), implode(',', $arr));
+                // dd($query);
+                DB::insert($query);
+
+                $data->ActualEnd = now()->addHours(company_timezone())->toDateTimeString();
+                if ($data->ActualStart == null) $data->ActualStart = $data->ActualEnd;
+                $hours = floor((strtotime($data->ActualEnd) - strtotime($data->ActualStart))/60/60);
+                $hours = $hours > 0 ? $hours : 1;
+                $days = $hours > 8 ? floor($hours/8) : 0;
+                $hours = $days > 0 ? $days % 8 : $hours;
+                $data->ActualDurationDay = $days;
+                $data->ActualDurationHour = $hours;
+                $data->Status = 'Completed';
+                $data->save();
+            });
+            $reff = Task::with('Projects','Projects.ProjectObj')->with([
+                'User1Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'User2Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'User3Obj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                'CreatedByObj' => function ($query) {$query->addSelect('Oid', 'Code', 'Name');},
+                ])->where('User1',$request->User1)->where('TaskReference',$data->Oid)->first();
+            $query = "INSERT INTO coltaskproject (Oid, Company, Project, Task) SELECT UUID(), Company, Project, '{$reff->Oid}' FROM coltask WHERE Oid = '{$data->Oid}'";
+            DB::insert($query);
+            return $reff;
+
+        } catch (\Exception $e) {
+            return response()->json(
+                errjson($e),
+                Response::HTTP_UNPROCESSABLE_ENTITY
+            );
+        }
+    }
+}

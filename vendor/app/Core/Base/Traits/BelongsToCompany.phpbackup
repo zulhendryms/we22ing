@@ -1,0 +1,41 @@
+<?php
+namespace App\Core\Base\Traits;
+
+use App\Core\Base\Scopes\CompanyScope;
+use App\Core\Master\Entities\Company;
+use Illuminate\Support\Facades\Auth;
+
+trait BelongsToCompany {
+
+    public static function bootBelongsToCompany() 
+    {
+        static::addGlobalScope(new CompanyScope);
+        static::creating(function ($model) {
+            // $user = Auth::user();
+            // if ($user) $company = $user->Company; else $company = config('app.company_id');
+            // $company = Company::where('Oid',$company)->first();
+            // logger($model);
+            // if ($company->ModuleMultiCompany) {
+                
+            //     // json_decode
+            //     if (strpos($company->ModuleMultiCompany, "'".$model->table."'") == 0) {
+            //         logger($company->Oid.' '.$model->table.' 1');
+            //         if (!isset($model->Company)) $model->Company = $company->Oid;
+            //     } else {
+            //         logger($company->Oid.' '.$model->table.' 2');
+
+            //     }
+            //     // if (!in_array($model->table, $company->ModuleMultiCompany)) if (!isset($model->Company)) $model->Company = $company;
+            // } else {
+            //     logger($company->Oid.' '.$model->table.' 3');
+                $model->Company = '1b7c48bb-e0e7-43e5-8a42-ec522e382d34';
+            // }
+
+        });
+    }
+
+    public function CompanyObj()
+    {
+        return $this->belongsTo("App\Core\Master\Entities\Company", "Company", "Oid");
+    }
+}

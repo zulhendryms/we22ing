@@ -1,0 +1,68 @@
+<?php
+
+namespace App\Core\Base\Scopes;
+
+use Illuminate\Database\Eloquent\Scope;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Auth;
+use App\Core\Master\Entities\Company;
+
+class CompanyScope implements Scope
+{
+    public function apply(Builder $builder, Model $model)
+    {
+        $logger = true;
+        $loggerTable = 'mstdepartment';
+        $user = Auth::user();
+        if ($user) $company = Auth::user()->CompanySource; else $company = config('app.company_id');
+        $company = Company::where('Oid',$company)->first();
+        $found = '';
+
+        $found = $this->findObject($found, $company->ModuleGlobal, $model, 'GlobalAll');
+        $found = $this->findObject($found, $company->ModuleGlobalCombo, $model, 'GlobalCombo');
+        $found = $this->findObject($found, $company->ModuleGroup, $model, 'GroupAll');
+        $found = $this->findObject($found, $company->ModuleGroupCombo, $model, 'GroupCombo');
+        
+        if ($company->Oid == $company->CompanySource) $type = 'Source';
+        elseif ($company->Oid == $company->CompanyParent) $type = 'Parent';
+        else $type = 'Detail';
+        
+        $criteria = null;
+        if ($found == 'GlobalAll' || $found == 'GlobalCombo') {
+            if ($model->getTable() == $loggerTable) dd(1);
+            $criteria = "(Company='".$company->Oid."' OR Company='".$company->CompanyParent."' OR Company='".$company->CompanySource."')";
+        } elseif ($found == '') {
+            if ($model->getTable() == $loggerTable) dd(2);
+            $criteria = "Company='".$company->Oid."'";
+        } elseif ($type == 'Source') { // Source - GROUP COMBO
+            if ($model->getTable() == $loggerTable) dd($found);
+            $criteria = "(Company='".$company->Oid."' OR Company='".$company->CompanyParent."')";
+        } elseif ($type == 'Parent') { // Group - GROUP COMBO
+            if ($model->getTable() == $loggerTable) dd($found);
+            $criteria = "(Company='".$company->Oid."' OR Company='".$company->CompanyParent."')";
+        } elseif ($type == 'Detail') { // Group - GROUP COMBO
+            if ($model->getTable() == $loggerTable) dd(4);
+            $criteria = "(Company='".$company->Oid."' OR Company='".$company->CompanyParent."')";
+        } else {
+            //nofilter
+        }
+        if ($logger) logger('Scope '.$type." ".$model->getTable()." ".$found." ".$criteria);
+        // dd($criteria);
+
+        if ($found == '') $found = 'NotFound';
+        if ($logger) logger('Scope '.$type." ".$model->getTable()." ".$found." ".$criteria);
+        if ($model->getTable() == 'mstdepartment') dd($criteria);
+        if ($criteria!="") $builder->whereRaw($criteria);
+    }
+    private function findObject($found, $data, $model, $newFound) {
+        if ($found != '') return $found;
+        if ($data) $data = json_decode($data);
+        if (!$data) return $found;
+        foreach($data as $row) {            
+            if ($row == 'all') return $newFound;
+            if ($row == $model->getTable()) return $newFound;
+        }
+    }
+}
